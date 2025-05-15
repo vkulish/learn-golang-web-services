@@ -24,19 +24,23 @@ var dataPool = sync.Pool{
 	},
 }
 
-func scanBrowsers(browser *string, seenBrowsers *[]string, uniqueBrowsers *int, user *User) {
+var androidBrowser = []byte("Android")
+var	msieBrowser    = []byte("MSIE")
+
+func scanBrowsers(browser []byte, seenBrowsers *[]string, uniqueBrowsers *int, user *User) {
 	//fmt.Printf("Checking browser: %s\n", browser)
 	
-	isAndroid := strings.Contains(*browser, "Android")
-	isMSIE := strings.Contains(*browser, "MSIE")
+	isAndroid := bytes.Contains(browser, androidBrowser)
+	isMSIE := bytes.Contains(browser, msieBrowser)
 	if isAndroid || isMSIE {
 		//fmt.Printf("Browser found: android=%v, MSIE=%v\n", isAndroid, isMSIE)
 		user.IsAndroid = user.IsAndroid || isAndroid
 		user.IsMSIE = user.IsMSIE || isMSIE
 
-		if !slices.Contains(*seenBrowsers, *browser) {
+		browserStr := string(browser)
+		if !slices.Contains(*seenBrowsers, browserStr) {
 			//fmt.Printf("FAST New browser: %s\n", browser)
-			*seenBrowsers = append(*seenBrowsers, *browser)
+			*seenBrowsers = append(*seenBrowsers, browserStr)
 			*uniqueBrowsers++
 		}
 	}
@@ -74,8 +78,7 @@ func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user
 						emailProcessing++
 						//fmt.Printf("--> User email: %v\n", user.Email)
 					} else if browserProcessing == 1 && arrayProcessing > 0 {
-						result := token.String()
-						scanBrowsers(&result, seenBrowsers, uniqueBrowsers, user)
+						scanBrowsers(token.Bytes(), seenBrowsers, uniqueBrowsers, user)
 					} else {
 						result := token.String()
 						switch result {
