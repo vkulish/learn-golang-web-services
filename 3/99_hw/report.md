@@ -1,5 +1,66 @@
 # Отчет об оптимизации функции FastSearch
 
+## Попытка 3
+Дальнейшее профилирование по CPU показало следующую картину:
+```
+(pprof) top Fast
+Active filters:
+   focus=Fast
+Showing nodes accounting for 1640ms, 50.62% of 3240ms total
+Showing top 10 nodes out of 89
+      flat  flat%   sum%        cum   cum%
+     620ms 19.14% 19.14%      990ms 30.56%  encoding/json.checkValid
+     280ms  8.64% 27.78%      280ms  8.64%  encoding/json.stateInString
+     220ms  6.79% 34.57%      220ms  6.79%  encoding/json.unquoteBytes
+     160ms  4.94% 39.51%      190ms  5.86%  encoding/json.(*decodeState).rescanLiteral
+     100ms  3.09% 42.59%      100ms  3.09%  indexbytebody
+      70ms  2.16% 44.75%       70ms  2.16%  internal/runtime/syscall.Syscall6
+      60ms  1.85% 46.60%      130ms  4.01%  runtime.mallocgc
+      50ms  1.54% 48.15%       60ms  1.85%  encoding/json.stateBeginValue
+      40ms  1.23% 49.38%       40ms  1.23%  encoding/json.stateBeginString
+      40ms  1.23% 50.62%     1970ms 60.80%  hw3.FastSearch
+```
+По-прежнему, конвертация из JSON в структуру занимает основное время по CPU.
+А что с памятью? Картина примерно такая же:
+```
+(pprof) top Fast
+Active filters:
+   focus=Fast
+Showing nodes accounting for 1276.66MB, 61.79% of 2066.25MB total
+Dropped 27 nodes (cum <= 10.33MB)
+Showing top 10 nodes out of 15
+      flat  flat%   sum%        cum   cum%
+  782.20MB 37.86% 37.86%   782.20MB 37.86%  io.ReadAll
+  327.44MB 15.85% 53.70%  1284.23MB 62.15%  hw3.FastSearch
+  110.51MB  5.35% 59.05%   110.51MB  5.35%  encoding/json.(*decodeState).literalStore
+      35MB  1.69% 60.75%   167.02MB  8.08%  encoding/json.Unmarshal
+      15MB  0.73% 61.47%   125.51MB  6.07%  encoding/json.(*decodeState).object
+    6.50MB  0.31% 61.79%     6.50MB  0.31%  encoding/json.(*scanner).pushParseState
+         0     0% 61.79%   101.51MB  4.91%  encoding/json.(*decodeState).array
+         0     0% 61.79%   125.51MB  6.07%  encoding/json.(*decodeState).unmarshal
+         0     0% 61.79%   125.51MB  6.07%  encoding/json.(*decodeState).value
+         0     0% 61.79%     6.50MB  0.31%  encoding/json.checkValid
+```
+Вывод: дальнейшая оптимизация возможна только на счет отказа от использования библиотеки `encoding/json` и переписывания парсера. Возможные варианты:
+1. Использовать готовое решение в духе easyjson. Хорошо для прода.
+2. Реализовать парсер самостоятельно. Хорошо для тренировки.
+
+Поскольку эту учебная задача, то лучше немного упороться и пойти по пути №2. Так интереснее.
+...
+После некоторого числа потраченного времени, удалось написать функцию `scanUser()` для парсинга строки JSON'a в структуру `User`. Бенчмарк показал следующие результаты:
+```
+$ GOGC=off go test -bench . -benchmem -cpuprofile cpu.out -memprofile mem.out
+goos: linux
+goarch: arm64
+pkg: hw3
+BenchmarkSlow-8               49          31974980 ns/op        19919985 B/op     182731 allocs/op
+BenchmarkFast-8              218           5579692 ns/op         1877699 B/op      46595 allocs/op
+PASS
+ok      hw3     3.642s
+```
+ Получилось ускорить программу еще почти в 1.5 раза. Как видно, уменьшился, прежде всего, размер аллоцируемых на операцию данных, при этом само число аллокаций увеличилось, вернувшись к значению, полученному в попытке №1. Идем оптимизировать дальше.
+
+
 ## Попытка 2
 Дальнейшее профилирование по CPU показало слещующую картину:
 ```

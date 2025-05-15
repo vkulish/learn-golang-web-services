@@ -5,15 +5,103 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"regexp"
-    "io/ioutil"
-	"encoding/json"
+	"bufio"
+	"slices"
 )
 
 type User struct {
-	Browsers []string `json:"browsers"`
-	Name     string `json:"name"`
-	Email    string `json:"email"`
+	IsAndroid bool
+	IsMSIE    bool
+	Name      string
+	Email     string
+}
+
+func scanBrowsers(browser *string, seenBrowsers *[]string, uniqueBrowsers *int, user *User) {
+	//fmt.Printf("Checking browser: %s\n", browser)
+	
+	isAndroid := strings.Contains(*browser, "Android")
+	isMSIE := strings.Contains(*browser, "MSIE")
+	if isAndroid || isMSIE {
+		//fmt.Printf("Browser found: android=%v, MSIE=%v\n", isAndroid, isMSIE)
+		user.IsAndroid = user.IsAndroid || isAndroid
+		user.IsMSIE = user.IsMSIE || isMSIE
+
+		if !slices.Contains(*seenBrowsers, *browser) {
+			//fmt.Printf("FAST New browser: %s\n", browser)
+			*seenBrowsers = append(*seenBrowsers, *browser)
+			*uniqueBrowsers++
+		}
+	}
+}
+
+func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user *User) error {
+	user.IsAndroid = false
+	user.IsMSIE = false
+
+	var token []byte
+	var tokenProcessing int 
+	var arrayProcessing int
+	var browserProcessing, nameProcessing, emailProcessing int
+
+	for _, c := range *userStr {
+
+		switch c {			
+			case '"':
+				switch tokenProcessing {
+				case 0:
+					tokenProcessing++
+					token = []byte{}
+				case 1:
+					//fmt.Printf("token: %s\n", token)
+					if nameProcessing == 1 {
+						result := string(token)
+						nameProcessing++
+						user.Name = result
+						nameProcessing++
+						//fmt.Printf("--> User name: %v\n", user.Name)
+					} else if emailProcessing == 1 {
+						result := string(token)
+						emailProcessing++
+						user.Email = strings.Replace(result, "@", " [at] ", 1)
+						emailProcessing++
+						//fmt.Printf("--> User email: %v\n", user.Email)
+					} else if browserProcessing == 1 && arrayProcessing > 0 {
+						result := string(token)
+						scanBrowsers(&result, seenBrowsers, uniqueBrowsers, user)
+					} else {
+						result := string(token)
+						switch result {
+						case "name":
+							nameProcessing++
+						case "email":
+							emailProcessing++
+						case "browsers":
+							browserProcessing++
+						}
+					}
+
+					tokenProcessing = 0
+				}
+			case '[':
+				if tokenProcessing == 0 {
+					arrayProcessing++
+				}
+			case ']':
+				if tokenProcessing == 0 {
+					arrayProcessing = 0
+				}
+			default:
+				if tokenProcessing == 1 {
+					token = append(token, c)
+				}
+		}
+	}
+
+	if len(user.Name) == 0 || len(user.Email) == 0 {
+		return fmt.Errorf("no data found")
+	}
+
+	return nil
 }
 
 // вам надо написать более быструю оптимальную этой функции
@@ -32,68 +120,34 @@ func FastSearch(out io.Writer) {
 		panic(err)
 	}
 
-	fileContents, err := ioutil.ReadAll(file)
-	if err != nil {
-		panic(err)
-	}
-
-	r := regexp.MustCompile("@")
-	seenBrowsers := []string{}
 	uniqueBrowsers := 0
-	foundUsers := ""
-
-	lines := strings.Split(string(fileContents), "\n")
+	seenBrowsers := make([]string, 0, 200)
+	foundUsers := make([]string, 0, 200)
 	user := User{}
 
-	for i, line := range lines {
-		// fmt.Printf("%v %v\n", err, line)
-		err := json.Unmarshal([]byte(line), &user)
+	scanner := bufio.NewScanner(file)
+
+	i := -1
+SCAN_USERS:
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		i++
+
+		err := scanUser(&line, &seenBrowsers, &uniqueBrowsers, &user)
 		if err != nil {
-			panic(err)
+			//fmt.Printf("error: %s, user: %v\n", err, user)
+			continue SCAN_USERS
 		}
 
-		isAndroid := false
-		isMSIE := false
-
-		for _, browser := range user.Browsers {
-			if ok := strings.Contains(browser, "Android"); ok {
-				isAndroid = true
-				notSeenBefore := true
-				for _, item := range seenBrowsers {
-					if item == browser {
-						notSeenBefore = false
-					}
-				}
-				if notSeenBefore {
-					// log.Printf("SLOW New browser: %s, first seen: %s", browser, user["name"])
-					seenBrowsers = append(seenBrowsers, browser)
-					uniqueBrowsers++
-				}
-			} else if ok := strings.Contains(browser, "MSIE"); ok {
-				isMSIE = true
-				notSeenBefore := true
-				for _, item := range seenBrowsers {
-					if item == browser {
-						notSeenBefore = false
-					}
-				}
-				if notSeenBefore {
-					// log.Printf("SLOW New browser: %s, first seen: %s", browser, user["name"])
-					seenBrowsers = append(seenBrowsers, browser)
-					uniqueBrowsers++
-				}
-			}
+		if !(user.IsAndroid && user.IsMSIE) {
+			continue SCAN_USERS
 		}
+		//fmt.Printf("FAST total unique browsers: %d, user: %s\n", uniqueBrowsers, user.Name)
 
-		if !(isAndroid && isMSIE) {
-			continue
-		}
-
-		// log.Println("Android and MSIE user:", user["name"], user["email"])
-		email := r.ReplaceAllString(user.Email, " [at] ")
-		foundUsers += fmt.Sprintf("[%d] %s <%s>\n", i, user.Name, email)
+		email := strings.Replace(user.Email, "@", " [at] ", 1)
+		foundUsers = append(foundUsers,fmt.Sprintf("[%d] %s <%s>\n", i, user.Name, email))
 	}
 
-	fmt.Fprintln(out, "found users:\n"+foundUsers)
+	fmt.Fprintln(out, "found users:\n"+strings.Join(foundUsers, ""))
 	fmt.Fprintln(out, "Total unique browsers", len(seenBrowsers))
 }
