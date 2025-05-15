@@ -10,6 +10,12 @@ import (
 	"encoding/json"
 )
 
+type User struct {
+	Browsers []string `json:"browsers"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+}
+
 // вам надо написать более быструю оптимальную этой функции
 func FastSearch(out io.Writer) {
 	/*
@@ -32,43 +38,25 @@ func FastSearch(out io.Writer) {
 	}
 
 	r := regexp.MustCompile("@")
-	rAndroid := regexp.MustCompile("Android")
-	rMSIE := regexp.MustCompile("MSIE")
 	seenBrowsers := []string{}
 	uniqueBrowsers := 0
 	foundUsers := ""
 
 	lines := strings.Split(string(fileContents), "\n")
+	user := User{}
 
-	users := make([]map[string]interface{}, 0)
-	for _, line := range lines {
-		user := make(map[string]interface{})
+	for i, line := range lines {
 		// fmt.Printf("%v %v\n", err, line)
 		err := json.Unmarshal([]byte(line), &user)
 		if err != nil {
 			panic(err)
 		}
-		users = append(users, user)
-	}
-
-	for i, user := range users {
 
 		isAndroid := false
 		isMSIE := false
 
-		browsers, ok := user["browsers"].([]interface{})
-		if !ok {
-			// log.Println("cant cast browsers")
-			continue
-		}
-
-		for _, browserRaw := range browsers {
-			browser, ok := browserRaw.(string)
-			if !ok {
-				// log.Println("cant cast browser to string")
-				continue
-			}
-			if ok := rAndroid.MatchString(browser); ok {
+		for _, browser := range user.Browsers {
+			if ok := strings.Contains(browser, "Android"); ok {
 				isAndroid = true
 				notSeenBefore := true
 				for _, item := range seenBrowsers {
@@ -81,16 +69,7 @@ func FastSearch(out io.Writer) {
 					seenBrowsers = append(seenBrowsers, browser)
 					uniqueBrowsers++
 				}
-			}
-		}
-
-		for _, browserRaw := range browsers {
-			browser, ok := browserRaw.(string)
-			if !ok {
-				// log.Println("cant cast browser to string")
-				continue
-			}
-			if ok := rMSIE.MatchString(browser); ok {
+			} else if ok := strings.Contains(browser, "MSIE"); ok {
 				isMSIE = true
 				notSeenBefore := true
 				for _, item := range seenBrowsers {
@@ -111,8 +90,8 @@ func FastSearch(out io.Writer) {
 		}
 
 		// log.Println("Android and MSIE user:", user["name"], user["email"])
-		email := r.ReplaceAllString(user["email"].(string), " [at] ")
-		foundUsers += fmt.Sprintf("[%d] %s <%s>\n", i, user["name"], email)
+		email := r.ReplaceAllString(user.Email, " [at] ")
+		foundUsers += fmt.Sprintf("[%d] %s <%s>\n", i, user.Name, email)
 	}
 
 	fmt.Fprintln(out, "found users:\n"+foundUsers)
