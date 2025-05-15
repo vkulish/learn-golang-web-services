@@ -7,6 +7,8 @@ import (
 	"strings"
 	"bufio"
 	"slices"
+	"sync"
+	"bytes"
 )
 
 type User struct {
@@ -14,6 +16,12 @@ type User struct {
 	IsMSIE    bool
 	Name      string
 	Email     string
+}
+
+var dataPool = sync.Pool{
+	New: func() interface{} {
+		return bytes.NewBuffer(make([]byte, 0, 256))
+	},
 }
 
 func scanBrowsers(browser *string, seenBrowsers *[]string, uniqueBrowsers *int, user *User) {
@@ -38,7 +46,7 @@ func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user
 	user.IsAndroid = false
 	user.IsMSIE = false
 
-	var token []byte
+	var token *bytes.Buffer
 	var tokenProcessing int 
 	var arrayProcessing int
 	var browserProcessing, nameProcessing, emailProcessing int
@@ -50,26 +58,26 @@ func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user
 				switch tokenProcessing {
 				case 0:
 					tokenProcessing++
-					token = []byte{}
+					token = dataPool.Get().(*bytes.Buffer)
 				case 1:
 					//fmt.Printf("token: %s\n", token)
 					if nameProcessing == 1 {
-						result := string(token)
+						result := token.String()
 						nameProcessing++
 						user.Name = result
 						nameProcessing++
 						//fmt.Printf("--> User name: %v\n", user.Name)
 					} else if emailProcessing == 1 {
-						result := string(token)
+						result := token.String()
 						emailProcessing++
 						user.Email = strings.Replace(result, "@", " [at] ", 1)
 						emailProcessing++
 						//fmt.Printf("--> User email: %v\n", user.Email)
 					} else if browserProcessing == 1 && arrayProcessing > 0 {
-						result := string(token)
+						result := token.String()
 						scanBrowsers(&result, seenBrowsers, uniqueBrowsers, user)
 					} else {
-						result := string(token)
+						result := token.String()
 						switch result {
 						case "name":
 							nameProcessing++
@@ -81,6 +89,8 @@ func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user
 					}
 
 					tokenProcessing = 0
+					token.Reset()
+					dataPool.Put(token)
 				}
 			case '[':
 				if tokenProcessing == 0 {
@@ -92,7 +102,7 @@ func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user
 				}
 			default:
 				if tokenProcessing == 1 {
-					token = append(token, c)
+					token.WriteByte(c)
 				}
 		}
 	}

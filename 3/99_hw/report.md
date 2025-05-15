@@ -1,5 +1,148 @@
 # Отчет об оптимизации функции FastSearch
 
+## Попытка 4
+Дальнейшее профилирование по CPU показало следующую картину:
+```
+(pprof) top Fast
+Active filters:
+   focus=Fast
+Showing nodes accounting for 1.41s, 28.37% of 4.97s total
+Showing top 10 nodes out of 100
+      flat  flat%   sum%        cum   cum%
+     0.61s 12.27% 12.27%      1.33s 26.76%  hw3.scanUser
+     0.16s  3.22% 15.49%      0.35s  7.04%  runtime.mallocgc
+     0.14s  2.82% 18.31%      0.14s  2.82%  internal/runtime/syscall.Syscall6
+     0.11s  2.21% 20.52%      0.50s 10.06%  runtime.growslice
+     0.10s  2.01% 22.54%      0.10s  2.01%  indexbytebody
+     0.10s  2.01% 24.55%      0.10s  2.01%  runtime.memclrNoHeapPointers
+     0.06s  1.21% 25.75%      0.06s  1.21%  runtime.memmove
+     0.06s  1.21% 26.96%      0.06s  1.21%  runtime.nextFreeFast (inline)
+     0.04s   0.8% 27.77%      0.12s  2.41%  runtime.slicebytetostring
+     0.03s   0.6% 28.37%      0.03s   0.6%  runtime.deductAssistCredit
+```
+Интересно заглянуть, что там в фукции `scanUser()` происходит?
+```
+(pprof) list scanUser
+Total: 4.97s
+ROUTINE ======================== hw3.scanUser in /workspaces/learn-golang-web-services/3/99_hw/fast.go
+     610ms      1.33s (flat, cum) 26.76% of Total
+         .          .     37:func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user *User) error {
+         .          .     38:   user.IsAndroid = false
+         .          .     39:   user.IsMSIE = false
+         .          .     40:
+         .          .     41:   var token []byte
+         .          .     42:   var tokenProcessing int 
+         .          .     43:   var arrayProcessing int
+         .          .     44:   var browserProcessing, nameProcessing, emailProcessing int
+         .          .     45:
+     320ms      320ms     46:   for _, c := range *userStr {
+         .          .     47:
+         .          .     48:           switch c {
+         .          .     49:                   case '"':
+         .          .     50:                           switch tokenProcessing {
+      20ms       20ms     51:                           case 0:
+         .          .     52:                                   tokenProcessing++
+         .          .     53:                                   token = []byte{}
+         .          .     54:                           case 1:
+         .          .     55:                                   //fmt.Printf("token: %s\n", token)
+         .          .     56:                                   if nameProcessing == 1 {
+         .       10ms     57:                                           result := string(token)
+         .          .     58:                                           nameProcessing++
+         .          .     59:                                           user.Name = result
+         .          .     60:                                           nameProcessing++
+         .          .     61:                                           //fmt.Printf("--> User name: %v\n", user.Name)
+         .          .     62:                                   } else if emailProcessing == 1 {
+         .       20ms     63:                                           result := string(token)
+         .          .     64:                                           emailProcessing++
+         .       20ms     65:                                           user.Email = strings.Replace(result, "@", " [at] ", 1)
+         .          .     66:                                           emailProcessing++
+         .          .     67:                                           //fmt.Printf("--> User email: %v\n", user.Email)
+      10ms       10ms     68:                                   } else if browserProcessing == 1 && arrayProcessing > 0 {
+         .       50ms     69:                                           result := string(token)
+         .      100ms     70:                                           scanBrowsers(&result, seenBrowsers, uniqueBrowsers, user)
+         .          .     71:                                   } else {
+         .       30ms     72:                                           result := string(token)
+         .          .     73:                                           switch result {
+         .          .     74:                                           case "name":
+         .          .     75:                                                   nameProcessing++
+         .          .     76:                                           case "email":
+         .          .     77:                                                   emailProcessing++
+         .          .     78:                                           case "browsers":
+         .          .     79:                                                   browserProcessing++
+         .          .     80:                                           }
+         .          .     81:                                   }
+         .          .     82:
+         .          .     83:                                   tokenProcessing = 0
+         .          .     84:                           }
+         .          .     85:                   case '[':
+         .          .     86:                           if tokenProcessing == 0 {
+         .          .     87:                                   arrayProcessing++
+         .          .     88:                           }
+     150ms      150ms     89:                   case ']':
+         .          .     90:                           if tokenProcessing == 0 {
+         .          .     91:                                   arrayProcessing = 0
+         .          .     92:                           }
+         .          .     93:                   default:
+     100ms      100ms     94:                           if tokenProcessing == 1 {
+         .      490ms     95:                                   token = append(token, c)
+         .          .     96:                           }
+         .          .     97:           }
+         .          .     98:   }
+         .          .     99:
+         .          .    100:   if len(user.Name) == 0 || len(user.Email) == 0 {
+         .          .    101:           return fmt.Errorf("no data found")
+         .          .    102:   }
+         .          .    103:
+      10ms       10ms    104:   return nil
+         .          .    105:}
+```
+Дополнительно гянув на вывод команды tree, становится ясно, что причина в интенсивной работе с временным слайсом:
+```
+(pprof) tree scanUser     
+Active filters:
+   focus=scanUser
+Showing nodes accounting for 1.33s, 26.76% of 4.97s total
+----------------------------------------------------------+-------------
+      flat  flat%   sum%        cum   cum%   calls calls% + context              
+----------------------------------------------------------+-------------
+                                             1.33s   100% |   hw3.FastSearch
+     0.61s 12.27% 12.27%      1.33s 26.76%                | hw3.scanUser
+                                             0.49s 36.84% |   runtime.growslice
+                                             0.11s  8.27% |   runtime.slicebytetostring
+                                             0.10s  7.52% |   hw3.scanBrowsers
+                                             0.02s  1.50% |   strings.Replace
+----------------------------------------------------------+-------------
+                                             0.24s 80.00% |   runtime.growslice
+                                             0.06s 20.00% |   runtime.slicebytetostring
+     0.16s  3.22% 15.49%      0.30s  6.04%                | runtime.mallocgc
+                                             0.04s 13.33% |   runtime.(*mcache).nextFree
+                                             0.03s 10.00% |   runtime.deductAssistCredit
+                                             0.03s 10.00% |   runtime.divRoundUp (inline)
+                                             0.02s  6.67% |   runtime.releasem (inline)
+                                             0.01s  3.33% |   runtime.makeSpanClass (inline)
+                                             0.01s  3.33% |   runtime.nextFreeFast (inline)
+```
+Чтобы умень число циклов аллокаций/деаллокаций, попробуем воспользоваться `sync.Pool`. Результаты тестового прогона следующие:
+```
+$ GOGC=off go test -bench . -benchmem
+goos: linux
+goarch: arm64
+pkg: hw3
+BenchmarkSlow-8               54          31055531 ns/op        19919005 B/op     182730 allocs/op
+BenchmarkFast-8              278           6049959 ns/op          519707 B/op       7318 allocs/op
+PASS
+ok      hw3     3.979s
+```
+Для сравнения, приведем целевые показатели производительности:
+```
+BenchmarkSolution-8 500 2782432 ns/op 559910 B/op 10422 allocs/op
+```
+Условия готовности задания выполнены, а именно:
+1. Один показатель лучше, чем эталонном решении: `519707 B/op` < `559910 B/op`
+2. Другой показатель лучшне на 20% и более: `7318 allocs/op` < `10422 allocs/op` почти на 30%
+
+Выходит, что задача решена.
+
 ## Попытка 3
 Дальнейшее профилирование по CPU показало следующую картину:
 ```
