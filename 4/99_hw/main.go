@@ -1,12 +1,13 @@
 package main
 
 import (
-	//"net/http"
+	"net/http"
 	"os"
 	"encoding/xml"
 	"fmt"
 	"strings"
 	"sort"
+	"strconv"
 )
 
 const filePath string = "./dataset.xml"
@@ -54,28 +55,28 @@ func makeUser(person *Person) User {
 
 func checkOrderField(order_field *string) error {
 	if len(*order_field) > 0 {
-		if !(strings.Contains(*order_field, "Id") || 
-		     strings.Contains(*order_field, "Name") || 
-			 strings.Contains(*order_field, "Age")) {
-				return fmt.Errorf(ErrorBadOrderField)
+		if !(strings.EqualFold(*order_field, "Id") || 
+		     strings.EqualFold(*order_field, "Name") || 
+			 strings.EqualFold(*order_field, "Age")) {
+				return fmt.Errorf("%s", ErrorBadOrderField)
 			 }
 	}
 	return nil
 }
 
-func cmpById(lhs, rhs *User) bool {
+func cmpById(lhs, rhs User) bool {
 	return lhs.Id < rhs.Id
 }
 
-func cmpByName(lhs, rhs *User) bool {
+func cmpByName(lhs, rhs User) bool {
 	return lhs.Name < rhs.Name
 }
 
-func cmpByAge(lhs, rhs *User) bool {
+func cmpByAge(lhs, rhs User) bool {
 	return lhs.Age < rhs.Age
 }
 
-func getCmpFunction(order_field *string) func(lhs, rhs *User) bool {
+func getCmpFunction(order_field *string) func(lhs, rhs User) bool {
 	switch *order_field {
 	case "Id":
 		return cmpById
@@ -112,7 +113,7 @@ func SearchServer(query, order_field string, order_by, limit, offset int) ([]Use
 
 		if found {
 			result = append(result, makeUser(&p))
-			
+
 			if limit > 0 && len(result) == limit {
 				break
 			}
@@ -120,36 +121,62 @@ func SearchServer(query, order_field string, order_by, limit, offset int) ([]Use
 	}
 
 	// sorting
-	cmp := getCmpFunction(&order_field)
-	switch order_by {
-	case OrderByAsc:
-		sort.SliceStable(result, func (i, j int) bool {
-			return cmp(&result[i], &result[j])
-		})
-	case OrderByDesc:
-		sort.SliceStable(result, func (i, j int) bool {
-			return !cmp(&result[i], &result[j])
-		})
-	case OrderByAsIs:
-		// don't sort
+	if len(result) > 1 {
+		cmp := getCmpFunction(&order_field)
+		switch order_by {
+		case OrderByAsc:
+			sort.SliceStable(result, func (i, j int) bool {
+				return cmp(result[i], result[j])
+			})
+		case OrderByDesc:
+			sort.SliceStable(result, func (i, j int) bool {
+				return !cmp(result[i], result[j])
+			})
+		case OrderByAsIs:
+			// don't sort
+		}
 	}
 
 	return result, nil
 }
 
+func handler(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("query")
+
+	order_field := r.URL.Query().Get("order_field")
+
+	order_by, err := strconv.Atoi(r.URL.Query().Get("order_by"))
+	if (err != nil) || 
+	   !(order_by == OrderByAsIs || order_by == OrderByAsc || order_by == OrderByDesc) {
+		fmt.Fprintln(w, "`order_by` has wrong value")
+		return
+	}
+
+	limit := -1
+	if val, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+		limit = val
+	}
+
+	offset := 0
+	offset_str := r.URL.Query().Get("offset")
+	if offset_str != "" {
+		if val, err := strconv.Atoi(offset_str); err == nil {
+			offset = val
+		}
+	}
+	
+	result, err := SearchServer(query, order_field, order_by, limit, offset)
+	if err != nil {
+		fmt.Fprintln(w, err)
+	}
+	fmt.Fprintf(w, "result: %v", result)
+}
+
 func main() {
 	loadData()
 
-	// perform search
-	res1, err := SearchServer("", "Id", OrderByAsIs, -1, 0)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("search 1:\n===\n %v\n===\n\n", res1)
-	
-	res2, err := SearchServer("Guerr", "Id", OrderByDesc, 1, 0)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("search 2:\n===\n %v\n===\n\n", res2)
+	http.HandleFunc("/", handler)
+
+	fmt.Println("starting server at :8080")
+	http.ListenAndServe(":8080", nil)
 }
