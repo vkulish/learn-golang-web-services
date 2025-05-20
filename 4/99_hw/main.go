@@ -1,29 +1,29 @@
 package main
 
 import (
-	"net/http"
-	"os"
 	"encoding/xml"
 	"fmt"
-	"strings"
+	"net/http"
+	"os"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 const filePath string = "./dataset.xml"
 
 type Person struct {
-	Id int           `xml:"id"`
-	Age int          `xml:"age"`
+	Id        int    `xml:"id"`
+	Age       int    `xml:"age"`
 	FirstName string `xml:"first_name"`
-	LastName string  `xml:"last_name"`
-	Name string      // surrogate value: FirstName + LastName
-	About string     `xml:"about"`
-	Gender string    `xml:"gender"`
+	LastName  string `xml:"last_name"`
+	Name      string // surrogate value: FirstName + LastName
+	About     string `xml:"about"`
+	Gender    string `xml:"gender"`
 }
 
 type Catalog struct {
-	Persons  []Person `xml:"row"`
+	Persons []Person `xml:"row"`
 }
 
 var cat = Catalog{}
@@ -50,18 +50,53 @@ func makeUser(person *Person) User {
 	u.Age = person.Age
 	u.Name = person.Name
 	u.Gender = person.Gender
+	u.About = person.About
 	return u
 }
 
-func checkOrderField(order_field *string) error {
+func checkOrderArg(order_field *string) error {
 	if len(*order_field) > 0 {
-		if !(strings.EqualFold(*order_field, "Id") || 
-		     strings.EqualFold(*order_field, "Name") || 
-			 strings.EqualFold(*order_field, "Age")) {
-				return fmt.Errorf("%s", ErrorBadOrderField)
-			 }
+		if !(strings.EqualFold(*order_field, "Id") ||
+			strings.EqualFold(*order_field, "Name") ||
+			strings.EqualFold(*order_field, "Age")) {
+			return fmt.Errorf("%s", ErrorBadOrderField)
+		}
 	}
 	return nil
+}
+
+func prepareOrderByArg(order_by *string) (int, error) {
+	if val, err := strconv.Atoi(*order_by); err == nil {
+		if val != OrderByAsIs && val != OrderByAsc && val != OrderByDesc {
+			return OrderByAsIs, fmt.Errorf("invalid argument")
+		}
+		return val, nil
+	} else {
+		return OrderByAsIs, fmt.Errorf("invalid argument")
+	}
+}
+
+func prepareLimitArg(limit *string) (int, error) {
+	if *limit == "" {
+		return -1, nil
+	}
+
+	if val, err := strconv.Atoi(*limit); err == nil {
+		return val, nil
+	} else {
+		return OrderByAsIs, fmt.Errorf("invalid argument")
+	}
+}
+
+func prepareOffsetArg(offset *string) (int, error) {
+	if *offset == "" {
+		return 0, nil
+	}
+	if val, err := strconv.Atoi(*offset); err == nil {
+		return val, nil
+	} else {
+		return 0, fmt.Errorf("invalid argument")
+	}
 }
 
 func cmpById(lhs, rhs User) bool {
@@ -90,8 +125,22 @@ func getCmpFunction(order_field *string) func(lhs, rhs User) bool {
 	return nil
 }
 
-func SearchServer(query, order_field string, order_by, limit, offset int) ([]User, error) {
-	if err := checkOrderField(&order_field); err != nil {
+func SearchServer(query, order_field, order_by_str, limit_str, offset_str string) ([]User, error) {
+	if err := checkOrderArg(&order_field); err != nil {
+		return nil, err
+	}
+	order_by, err := prepareOrderByArg(&order_by_str)
+	if err != nil {
+		return nil, err
+	}
+
+	offset, err := prepareOffsetArg(&offset_str)
+	if err != nil {
+		return nil, err
+	}
+
+	limit, err := prepareLimitArg(&limit_str)
+	if err != nil {
 		return nil, err
 	}
 
@@ -102,7 +151,7 @@ func SearchServer(query, order_field string, order_by, limit, offset int) ([]Use
 		if idx < offset {
 			continue
 		}
-		
+
 		found := len(query) == 0
 		if !found {
 			found = strings.Contains(p.Name, query)
@@ -125,11 +174,11 @@ func SearchServer(query, order_field string, order_by, limit, offset int) ([]Use
 		cmp := getCmpFunction(&order_field)
 		switch order_by {
 		case OrderByAsc:
-			sort.SliceStable(result, func (i, j int) bool {
+			sort.Slice(result, func(i, j int) bool {
 				return cmp(result[i], result[j])
 			})
 		case OrderByDesc:
-			sort.SliceStable(result, func (i, j int) bool {
+			sort.Slice(result, func(i, j int) bool {
 				return !cmp(result[i], result[j])
 			})
 		case OrderByAsIs:
@@ -142,32 +191,15 @@ func SearchServer(query, order_field string, order_by, limit, offset int) ([]Use
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("query")
-
 	order_field := r.URL.Query().Get("order_field")
+	order_by := r.URL.Query().Get("order_by")
+	limit := r.URL.Query().Get("limit")
+	offset := r.URL.Query().Get("offset")
 
-	order_by, err := strconv.Atoi(r.URL.Query().Get("order_by"))
-	if (err != nil) || 
-	   !(order_by == OrderByAsIs || order_by == OrderByAsc || order_by == OrderByDesc) {
-		fmt.Fprintln(w, "`order_by` has wrong value")
-		return
-	}
-
-	limit := -1
-	if val, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
-		limit = val
-	}
-
-	offset := 0
-	offset_str := r.URL.Query().Get("offset")
-	if offset_str != "" {
-		if val, err := strconv.Atoi(offset_str); err == nil {
-			offset = val
-		}
-	}
-	
 	result, err := SearchServer(query, order_field, order_by, limit, offset)
 	if err != nil {
 		fmt.Fprintln(w, err)
+		return
 	}
 	fmt.Fprintf(w, "result: %v", result)
 }
