@@ -51,7 +51,7 @@ func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user
 	user.IsMSIE = false
 
 	var token *bytes.Buffer
-	var tokenProcessing int
+	var tokenProcessing bool
 	var arrayProcessing int
 	var browserProcessing, nameProcessing, emailProcessing int
 
@@ -59,11 +59,10 @@ func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user
 
 		switch c {
 		case '"':
-			switch tokenProcessing {
-			case 0:
-				tokenProcessing++
+			if !tokenProcessing {
+				tokenProcessing = true
 				token = dataPool.Get().(*bytes.Buffer)
-			case 1:
+			} else {
 				//fmt.Printf("token: %s\n", token)
 				if nameProcessing == 1 {
 					result := token.String()
@@ -91,20 +90,20 @@ func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user
 					}
 				}
 
-				tokenProcessing = 0
+				tokenProcessing = false
 				token.Reset()
 				dataPool.Put(token)
 			}
 		case '[':
-			if tokenProcessing == 0 {
+			if !tokenProcessing {
 				arrayProcessing++
 			}
 		case ']':
-			if tokenProcessing == 0 {
+			if !tokenProcessing {
 				arrayProcessing = 0
 			}
 		default:
-			if tokenProcessing == 1 {
+			if tokenProcessing {
 				token.WriteByte(c)
 			}
 		}
@@ -133,10 +132,10 @@ func FastSearch(out io.Writer) {
 		panic(err)
 	}
 
-	uniqueBrowsers := 0
+	var uniqueBrowsers int
+	var user User
 	seenBrowsers := make([]string, 0, 200)
 	foundUsers := make([]string, 0, 200)
-	user := User{}
 
 	scanner := bufio.NewScanner(file)
 
