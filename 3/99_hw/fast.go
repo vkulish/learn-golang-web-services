@@ -1,14 +1,14 @@
 package main
 
 import (
-	"io"
-	"fmt"
-	"os"
-	"strings"
 	"bufio"
-	"slices"
-	"sync"
 	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"slices"
+	"strings"
+	"sync"
 )
 
 type User struct {
@@ -25,11 +25,11 @@ var dataPool = sync.Pool{
 }
 
 var androidBrowser = []byte("Android")
-var	msieBrowser    = []byte("MSIE")
+var msieBrowser = []byte("MSIE")
 
 func scanBrowsers(browser []byte, seenBrowsers *[]string, uniqueBrowsers *int, user *User) {
 	//fmt.Printf("Checking browser: %s\n", browser)
-	
+
 	isAndroid := bytes.Contains(browser, androidBrowser)
 	isMSIE := bytes.Contains(browser, msieBrowser)
 	if isAndroid || isMSIE {
@@ -51,62 +51,62 @@ func scanUser(userStr *[]byte, seenBrowsers *[]string, uniqueBrowsers *int, user
 	user.IsMSIE = false
 
 	var token *bytes.Buffer
-	var tokenProcessing int 
+	var tokenProcessing int
 	var arrayProcessing int
 	var browserProcessing, nameProcessing, emailProcessing int
 
 	for _, c := range *userStr {
 
-		switch c {			
-			case '"':
-				switch tokenProcessing {
-				case 0:
-					tokenProcessing++
-					token = dataPool.Get().(*bytes.Buffer)
-				case 1:
-					//fmt.Printf("token: %s\n", token)
-					if nameProcessing == 1 {
-						result := token.String()
+		switch c {
+		case '"':
+			switch tokenProcessing {
+			case 0:
+				tokenProcessing++
+				token = dataPool.Get().(*bytes.Buffer)
+			case 1:
+				//fmt.Printf("token: %s\n", token)
+				if nameProcessing == 1 {
+					result := token.String()
+					nameProcessing++
+					user.Name = result
+					nameProcessing++
+					//fmt.Printf("--> User name: %v\n", user.Name)
+				} else if emailProcessing == 1 {
+					result := token.String()
+					emailProcessing++
+					user.Email = strings.Replace(result, "@", " [at] ", 1)
+					emailProcessing++
+					//fmt.Printf("--> User email: %v\n", user.Email)
+				} else if browserProcessing == 1 && arrayProcessing > 0 {
+					scanBrowsers(token.Bytes(), seenBrowsers, uniqueBrowsers, user)
+				} else {
+					result := token.String()
+					switch result {
+					case "name":
 						nameProcessing++
-						user.Name = result
-						nameProcessing++
-						//fmt.Printf("--> User name: %v\n", user.Name)
-					} else if emailProcessing == 1 {
-						result := token.String()
+					case "email":
 						emailProcessing++
-						user.Email = strings.Replace(result, "@", " [at] ", 1)
-						emailProcessing++
-						//fmt.Printf("--> User email: %v\n", user.Email)
-					} else if browserProcessing == 1 && arrayProcessing > 0 {
-						scanBrowsers(token.Bytes(), seenBrowsers, uniqueBrowsers, user)
-					} else {
-						result := token.String()
-						switch result {
-						case "name":
-							nameProcessing++
-						case "email":
-							emailProcessing++
-						case "browsers":
-							browserProcessing++
-						}
+					case "browsers":
+						browserProcessing++
 					}
+				}
 
-					tokenProcessing = 0
-					token.Reset()
-					dataPool.Put(token)
-				}
-			case '[':
-				if tokenProcessing == 0 {
-					arrayProcessing++
-				}
-			case ']':
-				if tokenProcessing == 0 {
-					arrayProcessing = 0
-				}
-			default:
-				if tokenProcessing == 1 {
-					token.WriteByte(c)
-				}
+				tokenProcessing = 0
+				token.Reset()
+				dataPool.Put(token)
+			}
+		case '[':
+			if tokenProcessing == 0 {
+				arrayProcessing++
+			}
+		case ']':
+			if tokenProcessing == 0 {
+				arrayProcessing = 0
+			}
+		default:
+			if tokenProcessing == 1 {
+				token.WriteByte(c)
+			}
 		}
 	}
 
@@ -127,7 +127,7 @@ func FastSearch(out io.Writer) {
 		перечитайте еще раз задание
 		!!! !!! !!!
 	*/
-	
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		panic(err)
@@ -141,7 +141,6 @@ func FastSearch(out io.Writer) {
 	scanner := bufio.NewScanner(file)
 
 	i := -1
-SCAN_USERS:
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		i++
@@ -149,16 +148,15 @@ SCAN_USERS:
 		err := scanUser(&line, &seenBrowsers, &uniqueBrowsers, &user)
 		if err != nil {
 			//fmt.Printf("error: %s, user: %v\n", err, user)
-			continue SCAN_USERS
+			continue
 		}
 
 		if !(user.IsAndroid && user.IsMSIE) {
-			continue SCAN_USERS
+			continue
 		}
 		//fmt.Printf("FAST total unique browsers: %d, user: %s\n", uniqueBrowsers, user.Name)
 
-		email := strings.Replace(user.Email, "@", " [at] ", 1)
-		foundUsers = append(foundUsers,fmt.Sprintf("[%d] %s <%s>\n", i, user.Name, email))
+		foundUsers = append(foundUsers, fmt.Sprintf("[%d] %s <%s>\n", i, user.Name, user.Email))
 	}
 
 	fmt.Fprintln(out, "found users:\n"+strings.Join(foundUsers, ""))
