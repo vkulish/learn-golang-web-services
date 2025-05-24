@@ -6,13 +6,7 @@ import (
 )
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("query")
-	order_field := r.URL.Query().Get("order_field")
-	order_by := r.URL.Query().Get("order_by")
-	limit := r.URL.Query().Get("limit")
-	offset := r.URL.Query().Get("offset")
-
-	result, err := SearchServer(query, order_field, order_by, limit, offset)
+	result, err := SearchServer(r)
 	if err != nil {
 		fmt.Fprintln(w, err)
 		return

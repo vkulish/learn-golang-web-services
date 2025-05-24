@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/xml"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
@@ -37,38 +38,42 @@ func makeUser(person *Person) User {
 	return u
 }
 
-func checkOrderArg(order_field *string) error {
-	if len(*order_field) > 0 {
-		if !(strings.EqualFold(*order_field, "Id") ||
-			strings.EqualFold(*order_field, "Name") ||
-			strings.EqualFold(*order_field, "Age")) {
-			return fmt.Errorf("%s", ErrorBadOrderField)
-		}
+func checkOrderArg(order_field string) error {
+	if !(strings.EqualFold(order_field, "Id") ||
+		strings.EqualFold(order_field, "Name") ||
+		strings.EqualFold(order_field, "Age")) {
+		return fmt.Errorf("%s", ErrorBadOrderField)
 	}
 	return nil
 }
 
-func prepareOrderByArg(order_by *string) (int, error) {
-	if val, err := strconv.Atoi(*order_by); err == nil {
-		if val != OrderByAsIs && val != OrderByAsc && val != OrderByDesc {
-			return OrderByAsIs, fmt.Errorf("invalid argument")
+func prepareOrderByArg(order_by string) (int, error) {
+	if val, err := strconv.Atoi(order_by); err == nil {
+		switch val {
+			case OrderByAsc:
+				fallthrough
+			case OrderByAsIs:
+				fallthrough
+			case OrderByDesc:
+				return val, nil
+			default:
+				return OrderByAsIs, fmt.Errorf("invalid argument")
 		}
+	} else {
+		return OrderByAsIs, fmt.Errorf("invalid argument")
+	}
+}
+
+func prepareLimitArg(limit string) (int, error) {
+	if val, err := strconv.Atoi(limit); err == nil {
 		return val, nil
 	} else {
 		return OrderByAsIs, fmt.Errorf("invalid argument")
 	}
 }
 
-func prepareLimitArg(limit *string) (int, error) {
-	if val, err := strconv.Atoi(*limit); err == nil {
-		return val, nil
-	} else {
-		return OrderByAsIs, fmt.Errorf("invalid argument")
-	}
-}
-
-func prepareOffsetArg(offset *string) (int, error) {
-	if val, err := strconv.Atoi(*offset); err == nil {
+func prepareOffsetArg(offset string) (int, error) {
+	if val, err := strconv.Atoi(offset); err == nil {
 		return val, nil
 	} else {
 		return 0, fmt.Errorf("invalid argument")
@@ -101,21 +106,24 @@ func getCmpFunction(order_field *string) func(lhs, rhs User) bool {
 	return nil
 }
 
-func SearchServer(query, order_field, order_by_str, limit_str, offset_str string) ([]User, error) {
-	if err := checkOrderArg(&order_field); err != nil {
+func SearchServer(r *http.Request) ([]User, error) {
+	query := r.URL.Query().Get("query")
+	order_field := r.URL.Query().Get("order_field")
+	if err := checkOrderArg(order_field); err != nil {
 		return nil, err
 	}
-	order_by, err := prepareOrderByArg(&order_by_str)
+
+	order_by, err := prepareOrderByArg(r.URL.Query().Get("order_by"))
 	if err != nil {
 		return nil, err
 	}
 
-	offset, err := prepareOffsetArg(&offset_str)
+	limit, err := prepareLimitArg(r.URL.Query().Get("limit"))
 	if err != nil {
 		return nil, err
 	}
 
-	limit, err := prepareLimitArg(&limit_str)
+	offset, err := prepareOffsetArg(r.URL.Query().Get("offset"))
 	if err != nil {
 		return nil, err
 	}

@@ -12,22 +12,20 @@ import (
 	"testing"
 )
 
-func searchDummy(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("query")
-	order_field := r.URL.Query().Get("order_field")
-	order_by := r.URL.Query().Get("order_by")
-	limit := r.URL.Query().Get("limit")
-	offset := r.URL.Query().Get("offset")
+func writeSearchError(w http.ResponseWriter, err error) {
+	errResponce := &SearchErrorResponse{}
+	errResponce.Error = err.Error()
+	json, err := json.Marshal(errResponce)
+	if err == nil {
+		fmt.Fprintf(w, "%s", json)
+	}
+}
 
-	result, err := SearchServer(query, order_field, order_by, limit, offset)
+func searchHandler(w http.ResponseWriter, r *http.Request) {
+	result, err := SearchServer(r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		errResponce := &SearchErrorResponse{}
-		errResponce.Error = err.Error()
-		json, err := json.Marshal(errResponce)
-		if err == nil {
-			fmt.Fprint(w, json)
-		}
+		writeSearchError(w, err)
 		return
 	}
 
@@ -39,7 +37,6 @@ func searchDummy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, "%s", jsonResult)
 }
 
@@ -50,12 +47,12 @@ type TestCase struct {
 }
 
 func compareUser(lhs, rhs User) bool {
-	return lhs.Id == rhs.Id && lhs.Name == rhs.Name && lhs.Age == rhs.Age && lhs.Gender == rhs.Gender // && lhs.About == rhs.About
+	return lhs.Id == rhs.Id && lhs.Name == rhs.Name && lhs.Age == rhs.Age && lhs.Gender == rhs.Gender && lhs.About == rhs.About
 }
 
 func TestServerClientPositive(t *testing.T) {
 	LoadTestData()
-	ts := httptest.NewServer(http.HandlerFunc(searchDummy))
+	ts := httptest.NewServer(http.HandlerFunc(searchHandler))
 	defer ts.Close()
 
 	client := &SearchClient{
@@ -144,22 +141,21 @@ func TestServerClientPositive(t *testing.T) {
 	}
 
 	for caseNum, item := range cases {
-
-		responce, err := client.FindUsers(item.SearchRequest)
-
+		response, err := client.FindUsers(item.SearchRequest)
 		if err != nil {
 			t.Errorf("[%d] got `%s`, expected no errors",
 				caseNum, err.Error())
 		}
 
-		if responce == nil {
+		if response == nil {
 			t.Errorf("[%d] wrong Response: got <nil>, expected `%v`",
 				caseNum, &item.SearchResponse)
+			continue
 		}
 
-		if !slices.EqualFunc(responce.Users, item.SearchResponse.Users, compareUser) {
+		if !slices.EqualFunc(response.Users, item.SearchResponse.Users, compareUser) {
 			t.Errorf("[%d] wrong Response: got %+v, expected %+v",
-				caseNum, responce, &item.SearchResponse)
+				caseNum, response, &item.SearchResponse)
 		}
 	}
 
@@ -167,7 +163,7 @@ func TestServerClientPositive(t *testing.T) {
 
 func TestServerClientErrors(t *testing.T) {
 	LoadTestData()
-	ts := httptest.NewServer(http.HandlerFunc(searchDummy))
+	ts := httptest.NewServer(http.HandlerFunc(searchHandler))
 	defer ts.Close()
 
 	client := &SearchClient{
@@ -177,7 +173,7 @@ func TestServerClientErrors(t *testing.T) {
 
 	cases := []TestCase{
 		{
-			ErrorStr: "",
+			ErrorStr: ErrorBadOrderField,
 			SearchRequest: SearchRequest{
 				Limit:      1,
 				Offset:     0,
@@ -186,19 +182,47 @@ func TestServerClientErrors(t *testing.T) {
 				OrderBy:    OrderByAsc,
 			},
 		},
+		{
+			ErrorStr: "limit must be > 0",
+			SearchRequest: SearchRequest{
+				Limit:      -1,
+				Offset:     0,
+				Query:      "za",
+				OrderField: "About",
+				OrderBy:    OrderByAsc,
+			},
+		},
+		{
+			ErrorStr: "offset must be > 0",
+			SearchRequest: SearchRequest{
+				Limit:      1,
+				Offset:     -1,
+				Query:      "za",
+				OrderField: "About",
+				OrderBy:    OrderByAsc,
+			},
+		},
+		{
+			ErrorStr: "",
+			SearchRequest: SearchRequest{
+				Limit:      1,
+				Offset:     1,
+				Query:      "a",
+				OrderField: "Id",
+				OrderBy:    -100,
+			},
+		},
 	}
 
 	for caseNum, item := range cases {
-
 		_, err := client.FindUsers(item.SearchRequest)
-
 		if err == nil {
 			t.Errorf("[%d] got error <nil>, expected `%s`",
 				caseNum, item.ErrorStr)
 			continue
 		}
 
-		if err.Error() != item.ErrorStr ||
+		if err.Error() != item.ErrorStr &&
 			!strings.Contains(err.Error(), item.ErrorStr) {
 			t.Errorf("[%d] wrong error: got `%s`, expected `%s`",
 				caseNum, err.Error(), item.ErrorStr)
