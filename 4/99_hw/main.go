@@ -11,7 +11,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, err)
 		return
 	}
-	fmt.Fprintf(w, "result: %v", result)
+	fmt.Fprintf(w, "result: %+v", result)
 }
 
 func main() {

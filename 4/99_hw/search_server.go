@@ -10,31 +10,31 @@ import (
 	"strings"
 )
 
-type Person struct {
+type Record struct {
 	Id        int    `xml:"id"`
 	Age       int    `xml:"age"`
 	FirstName string `xml:"first_name"`
 	LastName  string `xml:"last_name"`
-	Name      string // surrogate value: FirstName + LastName
+	Name      string // surrogate value for search optimization: FirstName + LastName
 	About     string `xml:"about"`
 	Gender    string `xml:"gender"`
 }
 
 type Catalog struct {
-	Persons []Person `xml:"row"`
+	Records []Record `xml:"row"`
 }
 
 const filePath string = "./dataset.xml"
 
-var cat = Catalog{}
+var catalog = &Catalog{}
 
-func makeUser(person *Person) User {
+func makeUser(rec *Record) User {
 	u := User{}
-	u.Id = person.Id
-	u.Age = person.Age
-	u.Name = person.Name
-	u.Gender = person.Gender
-	u.About = strings.TrimSpace(person.About)
+	u.Id = rec.Id
+	u.Age = rec.Age
+	u.Name = rec.Name
+	u.Gender = rec.Gender
+	u.About = strings.TrimSpace(rec.About)
 	return u
 }
 
@@ -42,7 +42,7 @@ func checkOrderArg(order_field string) error {
 	if !(strings.EqualFold(order_field, "Id") ||
 		strings.EqualFold(order_field, "Name") ||
 		strings.EqualFold(order_field, "Age")) {
-		return fmt.Errorf("%s", ErrorBadOrderField)
+		return fmt.Errorf("%s", "ErrorBadOrderField")
 	}
 	return nil
 }
@@ -50,18 +50,15 @@ func checkOrderArg(order_field string) error {
 func prepareOrderByArg(order_by string) (int, error) {
 	if val, err := strconv.Atoi(order_by); err == nil {
 		switch val {
-			case OrderByAsc:
-				fallthrough
-			case OrderByAsIs:
-				fallthrough
-			case OrderByDesc:
-				return val, nil
-			default:
-				return OrderByAsIs, fmt.Errorf("invalid argument")
+		case OrderByAsc:
+			fallthrough
+		case OrderByAsIs:
+			fallthrough
+		case OrderByDesc:
+			return val, nil
 		}
-	} else {
-		return OrderByAsIs, fmt.Errorf("invalid argument")
 	}
+	return OrderByAsIs, fmt.Errorf("invalid argument")
 }
 
 func prepareLimitArg(limit string) (int, error) {
@@ -106,7 +103,14 @@ func getCmpFunction(order_field *string) func(lhs, rhs User) bool {
 	return nil
 }
 
-func SearchServer(r *http.Request) ([]User, error) {
+func SearchServer(r *http.Request) (*SearchResponse, error) {
+	// if there is no data in the "database"
+	// then return an internal server error because
+	// there is no ability to handle any request at all.
+	if catalog == nil || len(catalog.Records) == 0 {
+		return nil, fmt.Errorf("InternalServerError")
+	}
+
 	query := r.URL.Query().Get("query")
 	order_field := r.URL.Query().Get("order_field")
 	if err := checkOrderArg(order_field); err != nil {
@@ -128,10 +132,11 @@ func SearchServer(r *http.Request) ([]User, error) {
 		return nil, err
 	}
 
-	result := make([]User, 0, 10)
+	result := &SearchResponse{}
+	result.Users = make([]User, 0, 10)
 
 	// searching
-	for idx, p := range cat.Persons {
+	for idx, p := range catalog.Records {
 		if idx < offset {
 			continue
 		}
@@ -145,25 +150,26 @@ func SearchServer(r *http.Request) ([]User, error) {
 		}
 
 		if found {
-			result = append(result, makeUser(&p))
-
-			if limit > 0 && len(result) == limit {
+			if limit > 0 && len(result.Users) == limit {
+				result.NextPage = true
 				break
 			}
+
+			result.Users = append(result.Users, makeUser(&p))
 		}
 	}
 
 	// sorting
-	if len(result) > 1 {
+	if len(result.Users) > 1 {
 		cmp := getCmpFunction(&order_field)
 		switch order_by {
 		case OrderByAsc:
-			sort.Slice(result, func(i, j int) bool {
-				return cmp(result[i], result[j])
+			sort.Slice(result.Users, func(i, j int) bool {
+				return cmp(result.Users[i], result.Users[j])
 			})
 		case OrderByDesc:
-			sort.Slice(result, func(i, j int) bool {
-				return !cmp(result[i], result[j])
+			sort.Slice(result.Users, func(i, j int) bool {
+				return !cmp(result.Users[i], result.Users[j])
 			})
 		case OrderByAsIs:
 			// don't sort
@@ -179,12 +185,18 @@ func LoadTestData() {
 		panic(err)
 	}
 
-	err = xml.Unmarshal(data, &cat)
+	catalog = &Catalog{}
+	err = xml.Unmarshal(data, catalog)
 	if err != nil {
 		panic(err)
 	}
 
-	for i := range cat.Persons {
-		cat.Persons[i].Name = cat.Persons[i].FirstName + cat.Persons[i].LastName
+	for i := range catalog.Records {
+		// optimization: make surrogate value to speed up furner search
+		catalog.Records[i].Name = catalog.Records[i].FirstName + catalog.Records[i].LastName
 	}
+}
+
+func ClearTestData() {
+	catalog = nil
 }

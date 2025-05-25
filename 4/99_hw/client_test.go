@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeSearchError(w http.ResponseWriter, err error) {
@@ -24,12 +25,16 @@ func writeSearchError(w http.ResponseWriter, err error) {
 func searchHandler(w http.ResponseWriter, r *http.Request) {
 	result, err := SearchServer(r)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		if err.Error() == "InternalServerError" {
+			w.WriteHeader(http.StatusInternalServerError)
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+		}
 		writeSearchError(w, err)
 		return
 	}
 
-	jsonResult, err := json.Marshal(result)
+	jsonResult, err := json.Marshal(result.Users)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprint(w, err)
@@ -38,6 +43,14 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "%s", jsonResult)
+}
+
+func searchHandlerValidateToken(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("AccessToken") != "testToken" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	searchHandler(w, r)
 }
 
 type TestCase struct {
@@ -50,7 +63,7 @@ func compareUser(lhs, rhs User) bool {
 	return lhs.Id == rhs.Id && lhs.Name == rhs.Name && lhs.Age == rhs.Age && lhs.Gender == rhs.Gender && lhs.About == rhs.About
 }
 
-func TestServerClientPositive(t *testing.T) {
+func TestSearchClientPositive(t *testing.T) {
 	LoadTestData()
 	ts := httptest.NewServer(http.HandlerFunc(searchHandler))
 	defer ts.Close()
@@ -65,6 +78,27 @@ func TestServerClientPositive(t *testing.T) {
 			ErrorStr: "",
 			SearchRequest: SearchRequest{
 				Limit:      1,
+				Offset:     0,
+				Query:      "Annie",
+				OrderField: "Id",
+				OrderBy:    OrderByAsIs,
+			},
+			SearchResponse: SearchResponse{
+				Users: []User{
+					{
+						Id:     16,
+						Name:   "AnnieOsborn",
+						Age:    35,
+						About:  "Consequat fugiat veniam commodo nisi nostrud culpa pariatur. Aliquip velit adipisicing dolor et nostrud. Eu nostrud officia velit eiusmod ullamco duis eiusmod ad non do quis.",
+						Gender: "female",
+					}},
+				NextPage: false,
+			},
+		},
+		{
+			ErrorStr: "",
+			SearchRequest: SearchRequest{
+				Limit:      100,
 				Offset:     0,
 				Query:      "Annie",
 				OrderField: "Id",
@@ -173,7 +207,7 @@ func TestServerClientErrors(t *testing.T) {
 
 	cases := []TestCase{
 		{
-			ErrorStr: ErrorBadOrderField,
+			ErrorStr: "OrderFeld About invalid",
 			SearchRequest: SearchRequest{
 				Limit:      1,
 				Offset:     0,
@@ -210,6 +244,220 @@ func TestServerClientErrors(t *testing.T) {
 				Query:      "a",
 				OrderField: "Id",
 				OrderBy:    -100,
+			},
+		},
+	}
+
+	for caseNum, item := range cases {
+		_, err := client.FindUsers(item.SearchRequest)
+		if err == nil {
+			t.Errorf("[%d] got error <nil>, expected `%s`",
+				caseNum, item.ErrorStr)
+			continue
+		}
+
+		if err.Error() != item.ErrorStr &&
+			!strings.Contains(err.Error(), item.ErrorStr) {
+			t.Errorf("[%d] wrong error: got `%s`, expected `%s`",
+				caseNum, err.Error(), item.ErrorStr)
+		}
+	}
+}
+
+func TestSearchClientUnauthorized(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(searchHandlerValidateToken))
+	defer ts.Close()
+
+	client := &SearchClient{
+		AccessToken: "customToken",
+		URL:         ts.URL,
+	}
+
+	cases := []TestCase{
+		{
+			ErrorStr: "Bad AccessToken",
+			SearchRequest: SearchRequest{
+				Limit:      1,
+				Offset:     0,
+				Query:      "za",
+				OrderField: "Id",
+				OrderBy:    OrderByAsc,
+			},
+		},
+	}
+
+	for caseNum, item := range cases {
+		_, err := client.FindUsers(item.SearchRequest)
+		if err == nil {
+			t.Errorf("[%d] got error <nil>, expected `%s`",
+				caseNum, item.ErrorStr)
+			continue
+		}
+
+		if err.Error() != item.ErrorStr &&
+			!strings.Contains(err.Error(), item.ErrorStr) {
+			t.Errorf("[%d] wrong error: got `%s`, expected `%s`",
+				caseNum, err.Error(), item.ErrorStr)
+		}
+	}
+}
+
+func TestSearchClientUnknownError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(searchHandlerValidateToken))
+	defer ts.Close()
+
+	client := &SearchClient{
+		AccessToken: "testToken",
+		URL:         "99.99.99.99",
+	}
+
+	cases := []TestCase{
+		{
+			ErrorStr: "unknown error",
+			SearchRequest: SearchRequest{
+				Limit:      1,
+				Offset:     0,
+				Query:      "za",
+				OrderField: "Id",
+				OrderBy:    OrderByAsc,
+			},
+		},
+	}
+
+	for caseNum, item := range cases {
+		_, err := client.FindUsers(item.SearchRequest)
+		if err == nil {
+			t.Errorf("[%d] got error <nil>, expected `%s`",
+				caseNum, item.ErrorStr)
+			continue
+		}
+
+		if err.Error() != item.ErrorStr &&
+			!strings.Contains(err.Error(), item.ErrorStr) {
+			t.Errorf("[%d] wrong error: got `%s`, expected `%s`",
+				caseNum, err.Error(), item.ErrorStr)
+		}
+	}
+}
+
+func TestSearchClientTimeout(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+	}))
+	defer ts.Close()
+
+	client := &SearchClient{
+		AccessToken: "testToken",
+		URL:         ts.URL,
+	}
+
+	cases := []TestCase{
+		{
+			ErrorStr: "timeout",
+			SearchRequest: SearchRequest{
+				Limit:      1,
+				Offset:     0,
+				Query:      "za",
+				OrderField: "Id",
+				OrderBy:    OrderByAsc,
+			},
+		},
+	}
+
+	for caseNum, item := range cases {
+		_, err := client.FindUsers(item.SearchRequest)
+		if err == nil {
+			t.Errorf("[%d] got error <nil>, expected `%s`",
+				caseNum, item.ErrorStr)
+			continue
+		}
+
+		if err.Error() != item.ErrorStr &&
+			!strings.Contains(err.Error(), item.ErrorStr) {
+			t.Errorf("[%d] wrong error: got `%s`, expected `%s`",
+				caseNum, err.Error(), item.ErrorStr)
+		}
+	}
+}
+
+func TestSearchClientUnableToUnmarshal(t *testing.T) {
+	var returnInvalidJSON bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if returnInvalidJSON {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+		}
+		fmt.Fprint(w, "invalid json")
+	}))
+	defer ts.Close()
+
+	client := &SearchClient{
+		AccessToken: "testToken",
+		URL:         ts.URL,
+	}
+
+	cases := []TestCase{
+		{
+			ErrorStr: "cant unpack error json",
+			SearchRequest: SearchRequest{
+				Limit:      1,
+				Offset:     0,
+				Query:      "za",
+				OrderField: "Id",
+				OrderBy:    OrderByAsc,
+			},
+		},
+		{
+			ErrorStr: "cant unpack result json",
+			SearchRequest: SearchRequest{
+				Limit:      1,
+				Offset:     0,
+				Query:      "marco",
+				OrderField: "Age",
+				OrderBy:    OrderByAsc,
+			},
+		},
+	}
+
+	for caseNum, item := range cases {
+		// second case is one where we want to test error returned
+		// by the client trying to unmarshal invalid JSON result.
+		returnInvalidJSON = caseNum == 1
+		_, err := client.FindUsers(item.SearchRequest)
+		if err == nil {
+			t.Errorf("[%d] got error <nil>, expected `%s`",
+				caseNum, item.ErrorStr)
+			continue
+		}
+
+		if err.Error() != item.ErrorStr &&
+			!strings.Contains(err.Error(), item.ErrorStr) {
+			t.Errorf("[%d] wrong error: got `%s`, expected `%s`",
+				caseNum, err.Error(), item.ErrorStr)
+		}
+	}
+}
+
+func TestSearchClientServerInternalError(t *testing.T) {
+	ClearTestData()
+	ts := httptest.NewServer(http.HandlerFunc(searchHandler))
+	defer ts.Close()
+
+	client := &SearchClient{
+		AccessToken: "testToken",
+		URL:         ts.URL,
+	}
+
+	cases := []TestCase{
+		{
+			ErrorStr: "SearchServer fatal error",
+			SearchRequest: SearchRequest{
+				Limit:      1,
+				Offset:     0,
+				Query:      "za",
+				OrderField: "Id",
+				OrderBy:    OrderByAsc,
 			},
 		},
 	}
