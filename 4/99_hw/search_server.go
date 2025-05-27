@@ -11,7 +11,7 @@ import (
 )
 
 type Record struct {
-	Id        int    `xml:"id"`
+	ID        int    `xml:"id"`
 	Age       int    `xml:"age"`
 	FirstName string `xml:"first_name"`
 	LastName  string `xml:"last_name"`
