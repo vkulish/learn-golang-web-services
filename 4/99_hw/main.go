@@ -5,8 +5,8 @@ import (
 	"net/http"
 )
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	result, err := SearchServer(r)
+func handler(catalog *Catalog, w http.ResponseWriter, r *http.Request) {
+	result, err := SearchServer(catalog, r)
 	if err != nil {
 		fmt.Fprintln(w, err)
 		return
@@ -15,10 +15,16 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	LoadTestData()
+	catalog, err := LoadTestData()
+	if err != nil {
+		fmt.Println("Error loading test data:", err)
+		return
+	}
 
-	http.HandleFunc("/", handler)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		handler(catalog, w, r)
+	})
 
 	fmt.Println("starting server at :8080")
-	http.ListenAndServe(":8080", nil)
+	_ = http.ListenAndServe(":8080", nil)
 }

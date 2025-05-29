@@ -22,8 +22,8 @@ func writeSearchError(w http.ResponseWriter, err error) {
 	}
 }
 
-func searchHandler(w http.ResponseWriter, r *http.Request) {
-	result, err := SearchServer(r)
+func searchHandler(catalog *Catalog, w http.ResponseWriter, r *http.Request) {
+	result, err := SearchServer(catalog, r)
 	if err != nil {
 		if err.Error() == "InternalServerError" {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -45,12 +45,12 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "%s", jsonResult)
 }
 
-func searchHandlerValidateToken(w http.ResponseWriter, r *http.Request) {
+func validateTokenHandler(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("AccessToken") != "testToken" {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	searchHandler(w, r)
+	t.FailNow()
 }
 
 type TestCase struct {
@@ -64,8 +64,15 @@ func compareUser(lhs, rhs User) bool {
 }
 
 func TestSearchClientPositive(t *testing.T) {
-	LoadTestData()
-	ts := httptest.NewServer(http.HandlerFunc(searchHandler))
+	catalog, err := LoadTestData()
+	if err != nil {
+		t.FailNow()
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		searchHandler(catalog, w, r)
+	}))
+
 	defer ts.Close()
 
 	client := &SearchClient{
@@ -196,8 +203,15 @@ func TestSearchClientPositive(t *testing.T) {
 }
 
 func TestServerClientErrors(t *testing.T) {
-	LoadTestData()
-	ts := httptest.NewServer(http.HandlerFunc(searchHandler))
+	catalog, err := LoadTestData()
+	if err != nil {
+		t.FailNow()
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		searchHandler(catalog, w, r)
+	}))
+
 	defer ts.Close()
 
 	client := &SearchClient{
@@ -237,7 +251,7 @@ func TestServerClientErrors(t *testing.T) {
 			},
 		},
 		{
-			ErrorStr: "",
+			ErrorStr: "must be in a range",
 			SearchRequest: SearchRequest{
 				Limit:      1,
 				Offset:     1,
@@ -265,7 +279,9 @@ func TestServerClientErrors(t *testing.T) {
 }
 
 func TestSearchClientUnauthorized(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(searchHandlerValidateToken))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		validateTokenHandler(t, w, r)
+	}))
 	defer ts.Close()
 
 	client := &SearchClient{
@@ -303,7 +319,9 @@ func TestSearchClientUnauthorized(t *testing.T) {
 }
 
 func TestSearchClientUnknownError(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(searchHandlerValidateToken))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		validateTokenHandler(t, w, r)
+	}))
 	defer ts.Close()
 
 	client := &SearchClient{
@@ -440,8 +458,9 @@ func TestSearchClientUnableToUnmarshal(t *testing.T) {
 }
 
 func TestSearchClientServerInternalError(t *testing.T) {
-	ClearTestData()
-	ts := httptest.NewServer(http.HandlerFunc(searchHandler))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		searchHandler(nil, w, r)
+	}))
 	defer ts.Close()
 
 	client := &SearchClient{

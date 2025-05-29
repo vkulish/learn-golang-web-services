@@ -26,55 +26,44 @@ type Catalog struct {
 
 const filePath string = "./dataset.xml"
 
-var catalog = &Catalog{}
-
 func makeUser(rec *Record) User {
-	u := User{}
-	u.Id = rec.Id
-	u.Age = rec.Age
-	u.Name = rec.Name
-	u.Gender = rec.Gender
-	u.About = strings.TrimSpace(rec.About)
-	return u
+	return User{
+		Id:     rec.ID,
+		Age:    rec.Age,
+		Name:   rec.Name,
+		Gender: rec.Gender,
+		About:  strings.TrimSpace(rec.About),
+	}
 }
 
-func checkOrderArg(order_field string) error {
-	if !(strings.EqualFold(order_field, "Id") ||
-		strings.EqualFold(order_field, "Name") ||
-		strings.EqualFold(order_field, "Age")) {
+func checkOrderArg(orderField string) error {
+	if !(strings.EqualFold(orderField, "Id") ||
+		strings.EqualFold(orderField, "Name") ||
+		strings.EqualFold(orderField, "Age")) {
 		return fmt.Errorf("%s", "ErrorBadOrderField")
 	}
 	return nil
 }
 
-func prepareOrderByArg(order_by string) (int, error) {
-	if val, err := strconv.Atoi(order_by); err == nil {
+func prepareOrderByArg(orderBy string) (int, error) {
+	val, err := strconv.Atoi(orderBy)
+	if err == nil {
 		switch val {
-		case OrderByAsc:
-			fallthrough
-		case OrderByAsIs:
-			fallthrough
-		case OrderByDesc:
+		case OrderByAsc, OrderByAsIs, OrderByDesc:
 			return val, nil
+		default:
+			return 0, fmt.Errorf("%s", "order_by must be in a range [-1, 1]")
 		}
 	}
-	return OrderByAsIs, fmt.Errorf("invalid argument")
+	return 0, err
 }
 
-func prepareLimitArg(limit string) (int, error) {
-	if val, err := strconv.Atoi(limit); err == nil {
-		return val, nil
-	} else {
-		return OrderByAsIs, fmt.Errorf("invalid argument")
+func prepareNumberArg(limit string) (int, error) {
+	val, err := strconv.Atoi(limit)
+	if err != nil {
+		return 0, err
 	}
-}
-
-func prepareOffsetArg(offset string) (int, error) {
-	if val, err := strconv.Atoi(offset); err == nil {
-		return val, nil
-	} else {
-		return 0, fmt.Errorf("invalid argument")
-	}
+	return val, nil
 }
 
 func cmpById(lhs, rhs User) bool {
@@ -89,13 +78,11 @@ func cmpByAge(lhs, rhs User) bool {
 	return lhs.Age < rhs.Age
 }
 
-func getCmpFunction(order_field *string) func(lhs, rhs User) bool {
-	switch *order_field {
+func getCmpFunction(orderField string) func(lhs, rhs User) bool {
+	switch orderField {
 	case "Id":
 		return cmpById
-	case "":
-		fallthrough
-	case "Name":
+	case "", "Name":
 		return cmpByName
 	case "Age":
 		return cmpByAge
@@ -103,7 +90,7 @@ func getCmpFunction(order_field *string) func(lhs, rhs User) bool {
 	return nil
 }
 
-func SearchServer(r *http.Request) (*SearchResponse, error) {
+func SearchServer(catalog *Catalog, r *http.Request) (*SearchResponse, error) {
 	// if there is no data in the "database"
 	// then return an internal server error because
 	// there is no ability to handle any request at all.
@@ -112,24 +99,24 @@ func SearchServer(r *http.Request) (*SearchResponse, error) {
 	}
 
 	query := r.URL.Query().Get("query")
-	order_field := r.URL.Query().Get("order_field")
-	if err := checkOrderArg(order_field); err != nil {
+	orderField := r.URL.Query().Get("order_field")
+	if err := checkOrderArg(orderField); err != nil {
 		return nil, err
 	}
 
-	order_by, err := prepareOrderByArg(r.URL.Query().Get("order_by"))
+	orderBy, err := prepareOrderByArg(r.URL.Query().Get("order_by"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prepare orderBy arg: [%w]", err)
 	}
 
-	limit, err := prepareLimitArg(r.URL.Query().Get("limit"))
+	limit, err := prepareNumberArg(r.URL.Query().Get("limit"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prepare limit arg: [%w]", err)
 	}
 
-	offset, err := prepareOffsetArg(r.URL.Query().Get("offset"))
+	offset, err := prepareNumberArg(r.URL.Query().Get("offset"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prepare offset arg: [%w]", err)
 	}
 
 	result := &SearchResponse{}
@@ -161,8 +148,8 @@ func SearchServer(r *http.Request) (*SearchResponse, error) {
 
 	// sorting
 	if len(result.Users) > 1 {
-		cmp := getCmpFunction(&order_field)
-		switch order_by {
+		cmp := getCmpFunction(orderField)
+		switch orderBy {
 		case OrderByAsc:
 			sort.Slice(result.Users, func(i, j int) bool {
 				return cmp(result.Users[i], result.Users[j])
@@ -179,24 +166,22 @@ func SearchServer(r *http.Request) (*SearchResponse, error) {
 	return result, nil
 }
 
-func LoadTestData() {
+func LoadTestData() (*Catalog, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("could not load test data: [%w]", err)
 	}
 
-	catalog = &Catalog{}
-	err = xml.Unmarshal(data, catalog)
+	var catalog Catalog
+	err = xml.Unmarshal(data, &catalog)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("could not unmarshal test data: [%w]", err)
 	}
 
 	for i := range catalog.Records {
 		// optimization: make surrogate value to speed up furner search
 		catalog.Records[i].Name = catalog.Records[i].FirstName + catalog.Records[i].LastName
 	}
-}
 
-func ClearTestData() {
-	catalog = nil
+	return &catalog, nil
 }
