@@ -40,7 +40,7 @@ func checkOrderArg(orderField string) error {
 	if !(strings.EqualFold(orderField, "Id") ||
 		strings.EqualFold(orderField, "Name") ||
 		strings.EqualFold(orderField, "Age")) {
-		return fmt.Errorf("%s", "ErrorBadOrderField")
+		return fmt.Errorf("ErrorBadOrderField")
 	}
 	return nil
 }
@@ -52,7 +52,7 @@ func prepareOrderByArg(orderBy string) (int, error) {
 		case OrderByAsc, OrderByAsIs, OrderByDesc:
 			return val, nil
 		default:
-			return 0, fmt.Errorf("%s", "order_by must be in a range [-1, 1]")
+			return 0, fmt.Errorf("order_by must be in a range [-1, 1]")
 		}
 	}
 	return 0, err
