@@ -113,7 +113,49 @@ func processFuncDecl(f *ast.FuncDecl,
 	}
 
 	// function args
-	fmt.Fprintf(out, `%s(`, nameBuilder.String())
+	fmt.Fprintf(out, "%s(w http.ResponseWriter, r *http.Request) {\n", nameBuilder.String())
+
+	// function body
+	var args = make([]string, 0)
+	if f.Type != nil {
+		for i, item := range f.Type.Params.List {
+			fmt.Printf("type: %T data: %+v\n", item, item)
+			fmt.Printf("type: %T data: %+v\n", item.Type, item.Type)
+			//fmt.Fprintf(out, "%s ", item.Names[0].Name)
+			switch item.Type.(type) {
+				case *ast.SelectorExpr:
+					selector := item.Type.(*ast.SelectorExpr)
+					if selector.Sel.Name == "Context" {
+						fmt.Fprintln(out, "\tctx := r.Context()")
+						args = append(args, "ctx")
+					}
+				//	fmt.Fprintf(out, "%s.%s", selector.X, selector.Sel.Name)
+				case *ast.Ident:
+					ident := item.Type.(*ast.Ident)
+					fmt.Fprintf(out, "\tvar arg%d %s\n", i, ident.Name)
+					args = append(args, fmt.Sprintf("arg%d", i))
+				default:
+					continue
+			}
+			
+		}
+	}
+
+	// call wrapped function
+	fmt.Fprintf(out, "\th.%s(", f.Name.Name)
+	for i, arg := range args {
+		fmt.Fprint(out, arg)
+		if i+1 < len(args) {
+			fmt.Fprintf(out, ", ")
+		}
+	}
+	fmt.Fprintln(out, ")")
+
+	fmt.Fprintln(out, "}")
+	fmt.Fprintln(out)
+
+	// function args
+	/*fmt.Fprintf(out, `%s(`, nameBuilder.String())
 	if f.Type != nil {
 		for i, item := range f.Type.Params.List {
 			fmt.Printf("type: %T data: %+v\n", item, item)
@@ -137,6 +179,7 @@ func processFuncDecl(f *ast.FuncDecl,
 	}
 	fmt.Fprint(out, `) `)
 	fmt.Fprintln(out)
+	*/
 }
 
 func main() {
@@ -191,7 +234,7 @@ func main() {
 	}
 
 	for name, routes := range routes {
-		fmt.Printf("create ServeHTTP for class %s\n", name)
+		fmt.Printf("create ServeHTTP() for class %s\n", name)
 		fmt.Fprintf(out, "func (h *%s) ServeHTTP(w http.ResponseWriter, r *http.Request) {\n", name)
 		fmt.Fprintln(out, "\tswitch r.URL.Path {")
 		for _, route := range routes {
