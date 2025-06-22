@@ -304,14 +304,63 @@ func processFuncDecl(f *ast.FuncDecl,
 	}
 
 	// call wrapped function
-	fmt.Fprintf(out, "\th.%s(", wrappedFuncName)
+	var hasErrorResult bool
+	var commonResults []int
+	fmt.Fprintf(out, "\t")
+	if f.Type != nil && f.Type.Results != nil {
+		fmt.Println("|- process return values:")
+		for i, item := range f.Type.Results.List {
+			fmt.Printf("  |- type: %T data: %+v\n", item.Type, item.Type)
+			if i > 0 {
+				fmt.Fprint(out, ", ")
+			}
+
+			var isCommonRetVal bool = true
+			ident, ok := item.Type.(*ast.Ident)
+			if ok {
+				if ident.Name == "error" {
+					hasErrorResult = true
+					isCommonRetVal = false
+					fmt.Fprintf(out, "err")
+				}
+			}
+			if isCommonRetVal {
+				fmt.Fprintf(out, "res%d", i)
+				commonResults = append(commonResults, i)
+			}
+		}
+		fmt.Fprintf(out, " := ")
+	}
+
+	fmt.Fprintf(out, "h.%s(", wrappedFuncName)
 	for i, arg := range args {
 		fmt.Fprint(out, arg)
 		if i+1 < len(args) {
 			fmt.Fprintf(out, ", ")
 		}
 	}
-	fmt.Fprintln(out, ") // TODO: process return value")
+	fmt.Fprintln(out, ")")
+
+	// process function results
+	if hasErrorResult {
+		fmt.Fprintln(out, "\tif err != nil {")
+		fmt.Fprintln(out, "\t\tw.WriteHeader(http.StatusBadRequest)")
+		fmt.Fprintln(out, "\t\tfmt.Fprint(w, err)")
+		fmt.Fprintln(out, "\t\treturn")
+		fmt.Fprintln(out, "\t}")
+	}
+
+	for i := range commonResults {
+		fmt.Fprintln(out, "\t{")
+		fmt.Fprintf(out, "\t\tjsonStr, err := json.Marshal(res%d)\n", i)
+		fmt.Fprintln(out, "\t\tif err != nil {")
+		fmt.Fprintln(out, "\t\t\tw.WriteHeader(http.StatusBadRequest)")
+		fmt.Fprintln(out, "\t\t\treturn")
+		fmt.Fprintln(out, "\t\t}")
+		fmt.Fprintln(out, "\t\tw.WriteHeader(http.StatusOK)")
+		fmt.Fprintln(out, "\t\tfmt.Fprint(w, jsonStr)")
+		fmt.Fprintln(out, "\t}")
+	}
 
 	fmt.Fprintln(out, "}")
 	fmt.Fprintln(out)
@@ -341,6 +390,8 @@ func main() {
 
 	fmt.Fprintln(out, `package `+node.Name.Name)
 	fmt.Fprintln(out) // empty line
+	fmt.Fprintln(out, `import "encoding/json"`)
+	fmt.Fprintln(out, `import "fmt"`)
 	fmt.Fprintln(out, `import "net/http"`)
 	fmt.Fprintln(out, `import "strconv"`)
 	fmt.Fprintln(out) // empty line
