@@ -11,24 +11,34 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
 type apiStruct struct {
-	URL  string `json:"url"`
-	Auth bool   `json:"auth"`
-	Method string `json:"method"`
+	URL         string `json:"url"`
+	Auth        bool   `json:"auth"`
+	Method      string `json:"method"`
 	HandlerName string
 }
 
 type apiValidationRule struct {
-	required bool
-	min int
-	max int
+	required   bool
+	min        *int
+	max        *int
 	param_name string
-	enum string
-	defValue string
+	enum       []string
+	defValue   string
 }
+
+/*
+func toOutput(f *os.File, level int, a ...any) {
+	for i := 0; i < level; i++ {
+		fmt.Fprint(f, "\t")
+	}
+	fmt.Fprint(f, a...)
+}
+*/
 
 // Processes a generic declaration node
 func processGenDecl(g *ast.GenDecl, structDecls *map[string]*ast.StructType) {
@@ -64,7 +74,7 @@ func parseApiValidationRule(tag string) (result *apiValidationRule, ok bool) {
 	//	* `default` - если указано и приходит пустое значение (значение по-умолчанию) - устанавливать то что написано указано в `default`
 	//	* `min` - >= X для типа `int`, для строк `len(str)` >=
 	//	* `max` - <= X для типа `int`
-	
+
 	sentences := strings.Split(tag, ",")
 	if len(sentences) == 0 {
 		return
@@ -82,16 +92,40 @@ func parseApiValidationRule(tag string) (result *apiValidationRule, ok bool) {
 		switch ruleParts[0] {
 		case "required":
 			result.required = true
+		case "paramname":
+			result.param_name = ruleParts[1]
+		case "min":
+			tmp, err := strconv.Atoi(ruleParts[1])
+			if err == nil {
+				result.min = &tmp
+			}
+		case "max":
+			tmp, err := strconv.Atoi(ruleParts[1])
+			if err == nil {
+				result.max = &tmp
+			}
+		case "enum":
+			result.enum = strings.Split(ruleParts[1], "|")
+		case "default":
+			result.defValue = ruleParts[1]
 		}
 	}
 
 	return result, ok
 }
 
-func processFuncDecl(f *ast.FuncDecl, 
-	                 structDecls *map[string]*ast.StructType,
-					 routes *map[string][]apiStruct, // object -> routes
-					 out *os.File) {
+func writeFieldAssignement(argName, fieldName, rawValueName string, isInt, isString bool, out *os.File) {
+	if isInt {
+		fmt.Fprintf(out, "\t%s.%s, _ = strconv.Atoi(%s)\n", argName, fieldName, rawValueName)
+	} else if isString {
+		fmt.Fprintf(out, "\t%s.%s = %s\n", argName, fieldName, rawValueName)
+	}
+}
+
+func processFuncDecl(f *ast.FuncDecl,
+	structDecls *map[string]*ast.StructType,
+	routes *map[string][]apiStruct, // object -> routes
+	out *os.File) {
 
 	var wrappedFuncName = f.Name.Name
 
@@ -104,7 +138,7 @@ func processFuncDecl(f *ast.FuncDecl,
 				break
 			}
 		}
-	}	
+	}
 	if len(genRule) == 0 {
 		return
 	}
@@ -119,14 +153,14 @@ func processFuncDecl(f *ast.FuncDecl,
 	}
 
 	fmt.Printf("Generating handler for function %s\n", wrappedFuncName)
-	
+
 	var handlerNameBuilder strings.Builder
 	fmt.Fprintf(&handlerNameBuilder, "handler%s", wrappedFuncName)
 	spec.HandlerName = handlerNameBuilder.String()
 
 	fmt.Fprint(out, `func `)
 
-	// if this function is a class method, then we should 
+	// if this function is a class method, then we should
 	// determine which one class related to this function
 	// and make right signature.
 	if f.Recv != nil {
@@ -159,48 +193,113 @@ func processFuncDecl(f *ast.FuncDecl,
 			fmt.Printf("  |- type: %T data: %+v\n", item.Type, item.Type)
 			//fmt.Fprintf(out, "%s ", item.Names[0].Name)
 			switch item.Type.(type) {
-				case *ast.SelectorExpr:
-					selector := item.Type.(*ast.SelectorExpr)
-					if selector.Sel.Name == "Context" {
-						fmt.Fprintln(out, "\tctx := r.Context()")
-						args = append(args, "ctx")
-					}
-				//	fmt.Fprintf(out, "%s.%s", selector.X, selector.Sel.Name)
-				case *ast.Ident:
-					ident := item.Type.(*ast.Ident)
-					argName := fmt.Sprintf("arg%d", i)
-					argType := ident.Name
-					fmt.Fprintf(out, "\tvar %s %s\n", argName, argType) // i.e. "var argN SomeType"
-					//fmt.Printf("  |- type: %T data: %+v\n", item, item)
+			case *ast.SelectorExpr:
+				selector := item.Type.(*ast.SelectorExpr)
+				if selector.Sel.Name == "Context" {
+					fmt.Fprintln(out, "\tctx := r.Context()")
+					args = append(args, "ctx")
+				}
+			//	fmt.Fprintf(out, "%s.%s", selector.X, selector.Sel.Name)
+			case *ast.Ident:
+				ident := item.Type.(*ast.Ident)
+				argName := fmt.Sprintf("arg%d", i)
+				argType := ident.Name
+				fmt.Fprintf(out, "\tvar %s %s\n", argName, argType) // i.e. "var argN SomeType"
+				//fmt.Printf("  |- type: %T data: %+v\n", item, item)
 
-					//filling variable in accordance with its validation rule
-					structDecl, ok := (*structDecls)[argType]
-					if structDecl.Fields != nil && ok {
-						for _, field := range structDecl.Fields.List {
-							fieldName := field.Names[0].Name
-							//fmt.Printf("%s has field %+v of type %T\n", argType, field, field)
-							fmt.Fprintf(out, "\t%s.%s = r.URL.Query().Get(\"%s\")\n", argName, fieldName, fieldName)
+				//filling variable in accordance with its validation rule
+				structDecl, ok := (*structDecls)[argType]
+				if structDecl.Fields != nil && ok {
+					for _, field := range structDecl.Fields.List {
+						fieldName := field.Names[0].Name
+						rawValueName := fmt.Sprintf("%sValue", fieldName)
 
-							if field.Tag != nil {
-								tag := reflect.StructTag(field.Tag.Value[1 : len(field.Tag.Value)-1]) // trim ` brackets
-								apiValidationStr := tag.Get("apivalidator")
-								rule, ok := parseApiValidationRule(apiValidationStr)
-								if ok {
-									if rule.required {
-										fmt.Fprintf(out, "\tif len(%s.%s) == 0 {\n", argName, fieldName)
+						var isInt bool
+						var isString bool
+						var isProcessed bool
+
+						structType := fmt.Sprintf("%s", field.Type)
+						switch structType {
+						case "int":
+							isInt = true
+						case "string":
+							isString = true
+						default:
+							fmt.Printf("  |-WARNING: field %s has unsupported type %s\n", fieldName, structType)
+						}
+
+						if field.Tag != nil {
+							tag := reflect.StructTag(field.Tag.Value[1 : len(field.Tag.Value)-1]) // trim ` brackets
+							apiValidationStr := tag.Get("apivalidator")
+							rule, ok := parseApiValidationRule(apiValidationStr)
+							if ok {
+								//fmt.Printf("  |- Got apivalidator struct: %+v\n", rule)
+								if len(rule.param_name) > 0 {
+									fmt.Fprintf(out, "\t%s := r.URL.Query().Get(\"%s\")\n", rawValueName, rule.param_name)
+								} else {
+									fmt.Fprintf(out, "\t%s := r.URL.Query().Get(\"%s\")\n", rawValueName, strings.ToLower(fieldName))
+								}
+
+								if rule.required {
+									fmt.Fprintf(out, "\tif len(%s) == 0 {\n", rawValueName)
+									fmt.Fprintln(out, "\t\tw.WriteHeader(http.StatusBadRequest)")
+									fmt.Fprintln(out, "\t\treturn")
+									fmt.Fprintln(out, "\t}")
+								}
+
+								if isInt {
+									fmt.Fprintln(out, "\t{")
+									fmt.Fprintln(out, "\t\t // Validate int value")
+									fmt.Fprintf(out, "\t\tval, err := strconv.Atoi(%s)\n", rawValueName)
+									fmt.Fprintln(out, "\t\tif err != nil {")
+									fmt.Fprintln(out, "\t\t\tw.WriteHeader(http.StatusBadRequest)")
+									fmt.Fprintln(out, "\t\t\treturn")
+									fmt.Fprintln(out, "\t\t}")
+
+									if rule.min != nil {
+										fmt.Fprintf(out, "\t\tif val < %d {\n", *rule.min)
+										fmt.Fprintln(out, "\t\t\tw.WriteHeader(http.StatusBadRequest)")
+										fmt.Fprintln(out, "\t\t\treturn")
+										fmt.Fprintln(out, "\t\t}")
+									}
+
+									if rule.max != nil {
+										fmt.Fprintf(out, "\t\tif val > %d {\n", *rule.max)
+										fmt.Fprintln(out, "\t\t\tw.WriteHeader(http.StatusBadRequest)")
+										fmt.Fprintln(out, "\t\t\treturn")
+										fmt.Fprintln(out, "\t\t}")
+									}
+
+									fmt.Fprintln(out, "\t}")
+								} else if isString {
+									if rule.min != nil {
+										fmt.Fprintf(out, "\tif len(%s) < %d {\n", rawValueName, *rule.min)
 										fmt.Fprintln(out, "\t\tw.WriteHeader(http.StatusBadRequest)")
 										fmt.Fprintln(out, "\t\treturn")
 										fmt.Fprintln(out, "\t}")
 									}
+
+									if len(rule.defValue) > 0 {
+										fmt.Fprintf(out, "\tif len(%s) == 0 {\n", rawValueName)
+										fmt.Fprintf(out, "\t\t%s = \"%s\"\n", rawValueName, rule.defValue)
+										fmt.Fprintln(out, "\t}")
+									}
 								}
+
 							}
+
+							writeFieldAssignement(argName, fieldName, rawValueName, isInt, isString, out)
+							isProcessed = true
+						}
+
+						if !isProcessed {
+							fmt.Fprintf(out, "\t%s := r.URL.Query().Get(\"%s\")\n", rawValueName, strings.ToLower(fieldName))
+							writeFieldAssignement(argName, fieldName, rawValueName, isInt, isString, out)
 						}
 					}
-					args = append(args, argName)
-				default:
-					continue
+				}
+				args = append(args, argName)
 			}
-			
 		}
 	}
 
@@ -212,37 +311,11 @@ func processFuncDecl(f *ast.FuncDecl,
 			fmt.Fprintf(out, ", ")
 		}
 	}
-	fmt.Fprintln(out, ")")
+	fmt.Fprintln(out, ") // TODO: process return value")
 
 	fmt.Fprintln(out, "}")
 	fmt.Fprintln(out)
 
-	// function args
-	/*fmt.Fprintf(out, `%s(`, nameBuilder.String())
-	if f.Type != nil {
-		for i, item := range f.Type.Params.List {
-			fmt.Printf("type: %T data: %+v\n", item, item)
-			fmt.Printf("type: %T data: %+v\n", item.Type, item.Type)
-			fmt.Fprintf(out, "%s ", item.Names[0].Name)
-			switch item.Type.(type) {
-				case *ast.SelectorExpr:
-					selector := item.Type.(*ast.SelectorExpr)
-					fmt.Fprintf(out, "%s.%s", selector.X, selector.Sel.Name)
-				case *ast.Ident:
-					ident := item.Type.(*ast.Ident)
-					fmt.Fprintf(out, "%s", ident.Name)
-				default:
-					continue
-			}
-			
-			if i+1 < len(f.Type.Params.List) {
-				fmt.Fprintf(out, ", ")
-			}
-		}
-	}
-	fmt.Fprint(out, `) `)
-	fmt.Fprintln(out)
-	*/
 }
 
 func main() {
@@ -269,7 +342,7 @@ func main() {
 	fmt.Fprintln(out, `package `+node.Name.Name)
 	fmt.Fprintln(out) // empty line
 	fmt.Fprintln(out, `import "net/http"`)
-	fmt.Fprintln(out, `import "context"`)
+	fmt.Fprintln(out, `import "strconv"`)
 	fmt.Fprintln(out) // empty line
 
 	// structs map
