@@ -3,14 +3,15 @@ package main
 // код писать тут
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"log"
 	"os"
+	"reflect"
 	"strings"
-	"encoding/json"
 )
 
 type apiStruct struct {
@@ -18,6 +19,15 @@ type apiStruct struct {
 	Auth bool   `json:"auth"`
 	Method string `json:"method"`
 	HandlerName string
+}
+
+type apiValidationRule struct {
+	required bool
+	min int
+	max int
+	param_name string
+	enum string
+	defValue string
 }
 
 // Processes a generic declaration node
@@ -37,28 +47,45 @@ func processGenDecl(g *ast.GenDecl, structDecls *map[string]*ast.StructType) {
 			(*structDecls)[typeName] = currStruct
 			continue
 		}
-
-		//if typeName == "ApiError" {
-		//	fmt.Printf("SKIP known struct %s\n", currType.Name.Name)
-		//	continue
-		//}
-
-		/*
-		if g.Doc == nil {
-			fmt.Printf("SKIP struct %#v doesnt have comments\n", currType.Name.Name)
-			continue
-		}
-
-		needCodegen := false
-		for _, comment := range g.Doc.List {
-			needCodegen = needCodegen || strings.HasPrefix(comment.Text, "// apigen:api")
-		}
-		if !needCodegen {
-			fmt.Printf("SKIP struct %#v as it doesnt have apigen mark\n", currType.Name.Name)
-			continue
-		}
-		*/
 	}
+}
+
+func parseApiValidationRule(tag string) (result *apiValidationRule, ok bool) {
+	result = &apiValidationRule{}
+	ok = false
+	if len(tag) == 0 {
+		return
+	}
+
+	//	Нам доступны следующие метки валидатора-заполнятора `apivalidator`:
+	//	* `required` - поле не должно быть пустым (не должно иметь значение по-умолчанию)
+	//	* `paramname` - если указано - то брать из параметра с этим именем, иначе `lowercase` от имени
+	//	* `enum` - "одно из"
+	//	* `default` - если указано и приходит пустое значение (значение по-умолчанию) - устанавливать то что написано указано в `default`
+	//	* `min` - >= X для типа `int`, для строк `len(str)` >=
+	//	* `max` - <= X для типа `int`
+	
+	sentences := strings.Split(tag, ",")
+	if len(sentences) == 0 {
+		return
+	}
+
+	for _, rule := range sentences {
+		ruleParts := strings.Split(rule, "=")
+		if len(ruleParts) == 0 {
+			fmt.Println("ERROR: faced with maflformed apivalidator rule:", rule)
+			continue
+		}
+
+		ok = true
+
+		switch ruleParts[0] {
+		case "required":
+			result.required = true
+		}
+	}
+
+	return result, ok
 }
 
 func processFuncDecl(f *ast.FuncDecl, 
@@ -66,7 +93,9 @@ func processFuncDecl(f *ast.FuncDecl,
 					 routes *map[string][]apiStruct, // object -> routes
 					 out *os.File) {
 
-	var name = f.Name.Name
+	var wrappedFuncName = f.Name.Name
+
+	// getting rules for processing arguments
 	var genRule string
 	if f.Doc != nil {
 		for _, comment := range f.Doc.List {
@@ -86,16 +115,20 @@ func processFuncDecl(f *ast.FuncDecl,
 	res := json.Unmarshal([]byte(genRuleJson), spec)
 	if res != nil {
 		fmt.Printf("ERROR: Got wrong json for gen mark: %s\n", genRuleJson)
+		return
 	}
 
-	fmt.Printf("Generating handler for function %s\n", name)
+	fmt.Printf("Generating handler for function %s\n", wrappedFuncName)
 	
-	var nameBuilder strings.Builder
-	fmt.Fprintf(&nameBuilder, "handler%s", f.Name.Name)
-	spec.HandlerName = nameBuilder.String()
+	var handlerNameBuilder strings.Builder
+	fmt.Fprintf(&handlerNameBuilder, "handler%s", wrappedFuncName)
+	spec.HandlerName = handlerNameBuilder.String()
 
 	fmt.Fprint(out, `func `)
 
+	// if this function is a class method, then we should 
+	// determine which one class related to this function
+	// and make right signature.
 	if f.Recv != nil {
 		fmt.Fprint(out, `(h `)
 		for _, item := range f.Recv.List {
@@ -103,7 +136,9 @@ func processFuncDecl(f *ast.FuncDecl,
 			if ok {
 				var objectNameBuilder strings.Builder
 				fmt.Fprintf(&objectNameBuilder, "%s", star.X)
-				fmt.Fprintf(out, " *%s", star.X)
+				fmt.Fprintf(out, "*%s", star.X)
+				fmt.Printf("|- this is a method of %s\n", star.X)
+				// store relation between class name and its handler
 				(*routes)[objectNameBuilder.String()] = append((*routes)[objectNameBuilder.String()], *spec)
 			}
 			//fmt.Printf("recv types: %T data: %+v\n", item.Type, item.Type)
@@ -113,14 +148,15 @@ func processFuncDecl(f *ast.FuncDecl,
 	}
 
 	// function args
-	fmt.Fprintf(out, "%s(w http.ResponseWriter, r *http.Request) {\n", nameBuilder.String())
+	fmt.Fprintf(out, "%s(w http.ResponseWriter, r *http.Request) {\n", handlerNameBuilder.String())
 
 	// function body
 	var args = make([]string, 0)
 	if f.Type != nil {
+		fmt.Println("|- process args:")
 		for i, item := range f.Type.Params.List {
-			fmt.Printf("type: %T data: %+v\n", item, item)
-			fmt.Printf("type: %T data: %+v\n", item.Type, item.Type)
+			//fmt.Printf("  |- type: %T data: %+v\n", item, item)
+			fmt.Printf("  |- type: %T data: %+v\n", item.Type, item.Type)
 			//fmt.Fprintf(out, "%s ", item.Names[0].Name)
 			switch item.Type.(type) {
 				case *ast.SelectorExpr:
@@ -132,8 +168,35 @@ func processFuncDecl(f *ast.FuncDecl,
 				//	fmt.Fprintf(out, "%s.%s", selector.X, selector.Sel.Name)
 				case *ast.Ident:
 					ident := item.Type.(*ast.Ident)
-					fmt.Fprintf(out, "\tvar arg%d %s\n", i, ident.Name)
-					args = append(args, fmt.Sprintf("arg%d", i))
+					argName := fmt.Sprintf("arg%d", i)
+					argType := ident.Name
+					fmt.Fprintf(out, "\tvar %s %s\n", argName, argType) // i.e. "var argN SomeType"
+					//fmt.Printf("  |- type: %T data: %+v\n", item, item)
+
+					//filling variable in accordance with its validation rule
+					structDecl, ok := (*structDecls)[argType]
+					if structDecl.Fields != nil && ok {
+						for _, field := range structDecl.Fields.List {
+							fieldName := field.Names[0].Name
+							//fmt.Printf("%s has field %+v of type %T\n", argType, field, field)
+							fmt.Fprintf(out, "\t%s.%s = r.URL.Query().Get(\"%s\")\n", argName, fieldName, fieldName)
+
+							if field.Tag != nil {
+								tag := reflect.StructTag(field.Tag.Value[1 : len(field.Tag.Value)-1]) // trim ` brackets
+								apiValidationStr := tag.Get("apivalidator")
+								rule, ok := parseApiValidationRule(apiValidationStr)
+								if ok {
+									if rule.required {
+										fmt.Fprintf(out, "\tif len(%s.%s) == 0 {\n", argName, fieldName)
+										fmt.Fprintln(out, "\t\tw.WriteHeader(http.StatusBadRequest)")
+										fmt.Fprintln(out, "\t\treturn")
+										fmt.Fprintln(out, "\t}")
+									}
+								}
+							}
+						}
+					}
+					args = append(args, argName)
 				default:
 					continue
 			}
@@ -142,7 +205,7 @@ func processFuncDecl(f *ast.FuncDecl,
 	}
 
 	// call wrapped function
-	fmt.Fprintf(out, "\th.%s(", f.Name.Name)
+	fmt.Fprintf(out, "\th.%s(", wrappedFuncName)
 	for i, arg := range args {
 		fmt.Fprint(out, arg)
 		if i+1 < len(args) {
