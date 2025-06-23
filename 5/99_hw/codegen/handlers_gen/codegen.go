@@ -31,14 +31,11 @@ type apiValidationRule struct {
 	defValue   string
 }
 
-/*
-func toOutput(f *os.File, level int, a ...any) {
-	for i := 0; i < level; i++ {
-		fmt.Fprint(f, "\t")
-	}
-	fmt.Fprint(f, a...)
+func printWrappedResult(out *os.File, intendation int, code, errText, messageBody string) {
+	leftFiller := strings.Repeat("\t", intendation)
+	fmt.Fprintf(out, "%sw.WriteHeader(%s)\n", leftFiller, code)
+	fmt.Fprintf(out, "%sfmt.Fprintf(w, \"{\\\"error\\\": \\\"%s\\\", \\\"response\\\": %s}\", %q, %s)\n", leftFiller, "%s", "%s", errText, messageBody)
 }
-*/
 
 // Processes a generic declaration node
 func processGenDecl(g *ast.GenDecl, structDecls *map[string]*ast.StructType) {
@@ -235,9 +232,17 @@ func processFuncDecl(f *ast.FuncDecl,
 							if ok {
 								//fmt.Printf("  |- Got apivalidator struct: %+v\n", rule)
 								if len(rule.param_name) > 0 {
-									fmt.Fprintf(out, "\t%s := r.URL.Query().Get(\"%s\")\n", rawValueName, rule.param_name)
+									if spec.Method == "POST" {
+										fmt.Fprintf(out, "\t%s := r.FormValue(\"%s\")\n", rawValueName, rule.param_name)
+									} else {
+										fmt.Fprintf(out, "\t%s := r.URL.Query().Get(\"%s\")\n", rawValueName, rule.param_name)
+									}
 								} else {
-									fmt.Fprintf(out, "\t%s := r.URL.Query().Get(\"%s\")\n", rawValueName, strings.ToLower(fieldName))
+									if spec.Method == "POST" {
+										fmt.Fprintf(out, "\t%s := r.FormValue(\"%s\")\n", rawValueName, strings.ToLower(fieldName))
+									} else {
+										fmt.Fprintf(out, "\t%s := r.URL.Query().Get(\"%s\")\n", rawValueName, strings.ToLower(fieldName))
+									}
 								}
 
 								if rule.required {
@@ -304,35 +309,7 @@ func processFuncDecl(f *ast.FuncDecl,
 	}
 
 	// call wrapped function
-	var hasErrorResult bool
-	var commonResults []int
-	fmt.Fprintf(out, "\t")
-	if f.Type != nil && f.Type.Results != nil {
-		fmt.Println("|- process return values:")
-		for i, item := range f.Type.Results.List {
-			fmt.Printf("  |- type: %T data: %+v\n", item.Type, item.Type)
-			if i > 0 {
-				fmt.Fprint(out, ", ")
-			}
-
-			var isCommonRetVal bool = true
-			ident, ok := item.Type.(*ast.Ident)
-			if ok {
-				if ident.Name == "error" {
-					hasErrorResult = true
-					isCommonRetVal = false
-					fmt.Fprintf(out, "err")
-				}
-			}
-			if isCommonRetVal {
-				fmt.Fprintf(out, "res%d", i)
-				commonResults = append(commonResults, i)
-			}
-		}
-		fmt.Fprintf(out, " := ")
-	}
-
-	fmt.Fprintf(out, "h.%s(", wrappedFuncName)
+	fmt.Fprintf(out, "\tres, err := h.%s(", wrappedFuncName)
 	for i, arg := range args {
 		fmt.Fprint(out, arg)
 		if i+1 < len(args) {
@@ -342,25 +319,24 @@ func processFuncDecl(f *ast.FuncDecl,
 	fmt.Fprintln(out, ")")
 
 	// process function results
-	if hasErrorResult {
-		fmt.Fprintln(out, "\tif err != nil {")
-		fmt.Fprintln(out, "\t\tw.WriteHeader(http.StatusBadRequest)")
-		fmt.Fprintln(out, "\t\tfmt.Fprint(w, err)")
-		fmt.Fprintln(out, "\t\treturn")
-		fmt.Fprintln(out, "\t}")
-	}
+	fmt.Fprintln(out, "\tif err != nil {")
+	fmt.Fprintln(out, "\t\tapiErr, ok := err.(ApiError)")
+	fmt.Fprintln(out, "\t\tif ok {")
+	fmt.Fprintln(out, "\t\t\tw.WriteHeader(apiErr.HTTPStatus)")
+	fmt.Fprintln(out, "\t\t\tfmt.Fprint(w, apiErr.Err)")
+	fmt.Fprintln(out, "\t\t} else {")
+	fmt.Fprintln(out, "\t\t\tw.WriteHeader(http.StatusBadRequest)")
+	fmt.Fprintln(out, "\t\t\tfmt.Fprint(w, err)")
+	fmt.Fprintln(out, "\t\t}")
+	fmt.Fprintln(out, "\t\treturn")
+	fmt.Fprintln(out, "\t}")
 
-	for i := range commonResults {
-		fmt.Fprintln(out, "\t{")
-		fmt.Fprintf(out, "\t\tjsonStr, err := json.Marshal(res%d)\n", i)
-		fmt.Fprintln(out, "\t\tif err != nil {")
-		fmt.Fprintln(out, "\t\t\tw.WriteHeader(http.StatusBadRequest)")
-		fmt.Fprintln(out, "\t\t\treturn")
-		fmt.Fprintln(out, "\t\t}")
-		fmt.Fprintln(out, "\t\tw.WriteHeader(http.StatusOK)")
-		fmt.Fprintln(out, "\t\tfmt.Fprint(w, jsonStr)")
-		fmt.Fprintln(out, "\t}")
-	}
+	fmt.Fprintln(out, "\tjsonStr, err := json.Marshal(res)")
+	fmt.Fprintln(out, "\tif err != nil {")
+	fmt.Fprintln(out, "\t\tw.WriteHeader(http.StatusBadRequest)")
+	fmt.Fprintln(out, "\t\treturn")
+	fmt.Fprintln(out, "\t}")
+	printWrappedResult(out, 1, "http.StatusOK", "", "jsonStr")
 
 	fmt.Fprintln(out, "}")
 	fmt.Fprintln(out)
@@ -426,6 +402,13 @@ func main() {
 		fmt.Fprintln(out, "\tswitch r.URL.Path {")
 		for _, route := range routes {
 			fmt.Fprintf(out, "\tcase \"%s\":\n", route.URL)
+			if route.Auth {
+				fmt.Fprintln(out, "\t\tauth := r.Header.Get(\"X-Auth\")")
+				fmt.Fprintln(out, "\t\tif auth != \"100500\" {")
+				fmt.Fprintln(out, "\t\t\tw.WriteHeader(http.StatusUnauthorized)")
+				fmt.Fprintln(out, "\t\t\treturn")
+				fmt.Fprintln(out, "\t\t}")
+			}
 			fmt.Fprintf(out, "\t\th.%s(w, r)\n", route.HandlerName)
 		}
 		fmt.Fprintln(out, "\tdefault:")
