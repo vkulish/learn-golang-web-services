@@ -12,9 +12,8 @@ import (
 )
 
 type columnInfo struct {
-	Id   int
 	Name string
-	Type any
+	Type string
 }
 
 type tableInfo struct {
@@ -31,6 +30,7 @@ type Handler struct {
 func NewDbExplorer(db *sql.DB) (Handler, error) {
 	var h Handler
 	h.Db = db
+	h.Tables = make(map[string]tableInfo)
 
 	// STEP 1: get tables list
 	rows, err := h.Db.Query("SHOW TABLES")
@@ -40,29 +40,61 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 
 	tables := make([]string, 0, 3)
 	for rows.Next() {
-		//TODO
+		var name string
+		err := rows.Scan(&name)
+		if err != nil {
+			rows.Close()
+			return h, errors.Wrap(err, "unable to get table name")
+		}
+		tables = append(tables, name)
 	}
 	rows.Close()
 
-	// STEP 2: get columns info for every table
+	fmt.Printf("Found tables: %v\n", tables)
+
+	// STEP 2: get columns info for each table
 	for _, tableName := range tables {
-		rows, err := h.Db.Query("SHOW FULL COLUMNS FROM ?", tableName)
+		fmt.Println("Getting columns info for table:", tableName)
+		// In MySQL, the `SHOW` commands are a bit different
+		// and do not support using placeholders for
+		// identifiers (like table names, column names) in prepared statements.
+		// So build the query string by hand, it`s safe here.
+		rows, err := h.Db.Query("SHOW FULL COLUMNS FROM " + tableName)
 		if err != nil {
 			return h, errors.Wrap(err, fmt.Sprintf("unable to get columns for the table %s", tableName))
 		}
 		var table tableInfo
 		table.Name = tableName
 		table.Columns = make([]columnInfo, 0, 3)
-		// TODO: fill columns info
-		//rawColumn := &sql.ColumnType
+
+		// TODO: replace this ugly code by
+		// https://golang.org/pkg/database/sql/#Rows.ColumnTypes
+		var fields [7]any
 		for rows.Next() {
-			//err = rows.Scan(rawColumn., &post.Title, &post.Updated)
-			//if err == nil {
-			//	var column columnInfo
-			//
-			//}
+			var (
+				name string
+				tp   string
+			)
+			err = rows.Scan(&name, // Field
+				&tp,        // Type
+				&fields[0], // Collation
+				&fields[1], // Null
+				&fields[2], // Key
+				&fields[3], // Default
+				&fields[4], // Extra
+				&fields[5], // Privilges
+				&fields[6]) // Comment
+			if err != nil {
+				return h, errors.Wrap(err, fmt.Sprintf("unable to scan column for the table %s", tableName))
+			}
+			//fmt.Printf("\tFields: %+v", fields)
+			var info columnInfo
+			info.Name = name
+			info.Type = tp
+			//fmt.Printf("\tColumn: %v\n", info)
+			table.Columns = append(table.Columns, info)
 		}
-		// надо закрывать соединение, иначе будет течь
+		fmt.Println("\tGot columns:", len(table.Columns))
 		rows.Close()
 		h.Tables[tableName] = table
 		rows.Close()
@@ -75,6 +107,9 @@ func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		// TODO: list all tables
+	}
 }
 
 func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
