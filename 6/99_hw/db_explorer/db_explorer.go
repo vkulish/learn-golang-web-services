@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/pkg/errors"
 )
@@ -25,7 +26,7 @@ type tableInfo struct {
 type Handler struct {
 	Db *sql.DB
 
-	TablesNames []string
+	TablesNames []string // TODO: make it sorted
 	Tables      map[string]tableInfo
 }
 
@@ -110,15 +111,39 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 }
 
+func (h *Handler) checkTableExistance(w http.ResponseWriter, tableName string) bool {
+	var tableFound bool
+	for _, table := range h.TablesNames {
+		if table == tableName {
+			tableFound = true
+			break
+		}
+	}
+	if !tableFound {
+		response := Response{
+			"error": "unknown table",
+		}
+		str, err := json.Marshal(response)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "%s", errors.Wrap(err, "Could not serialize response to JSON"))
+			return false
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write(str)
+		return false
+	}
+	return true
+}
+
 func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" {
+	if r.URL.Path == "/" { // List all tables
 		response := Response{
 			"response": Response{
 				"tables": h.TablesNames,
 			},
 		}
 		str, err := json.Marshal(response)
-		//fmt.Printf("response:%s\b", str)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, "%s", errors.Wrap(err, "Could not serialize response to JSON"))
@@ -127,6 +152,30 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write(str)
 		return
+	}
+
+	paths := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	fmt.Println("\tGot paths:", paths, "len:", len(paths))
+	if len(paths) == 1 { // have a form like "GET /$table?limit=5&offset=7"
+		if !h.checkTableExistance(w, paths[0]) {
+			return
+		}
+		//TODO: parse query, ask DB, and return result
+
+	} else if len(paths) == 2 {
+		if !h.checkTableExistance(w, paths[0]) {
+			return
+		}
+		//TODO: request DB for a particular item
+		rows, err := h.Db.Query("SELECT * FROM ? WHERE id = ?", paths[0], paths[1])
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "%s", errors.Wrap(err, fmt.Sprintf("unable to get data from `%s` table", paths[0])))
+		}
+		for rows.Next() {
+
+		}
+		rows.Close()
 	}
 }
 
