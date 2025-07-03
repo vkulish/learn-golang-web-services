@@ -5,6 +5,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -24,12 +25,16 @@ type tableInfo struct {
 type Handler struct {
 	Db *sql.DB
 
-	Tables map[string]tableInfo
+	TablesNames []string
+	Tables      map[string]tableInfo
 }
+
+type Response map[string]interface{}
 
 func NewDbExplorer(db *sql.DB) (Handler, error) {
 	var h Handler
 	h.Db = db
+	h.TablesNames = make([]string, 0, 5)
 	h.Tables = make(map[string]tableInfo)
 
 	// STEP 1: get tables list
@@ -38,7 +43,6 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 		return h, errors.Wrap(err, "unable to get tables list from the DB")
 	}
 
-	tables := make([]string, 0, 3)
 	for rows.Next() {
 		var name string
 		err := rows.Scan(&name)
@@ -46,14 +50,14 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 			rows.Close()
 			return h, errors.Wrap(err, "unable to get table name")
 		}
-		tables = append(tables, name)
+		h.TablesNames = append(h.TablesNames, name)
 	}
 	rows.Close()
 
-	fmt.Printf("Found tables: %v\n", tables)
+	fmt.Printf("Found tables: %v\n", h.TablesNames)
 
 	// STEP 2: get columns info for each table
-	for _, tableName := range tables {
+	for _, tableName := range h.TablesNames {
 		fmt.Println("Getting columns info for table:", tableName)
 		// In MySQL, the `SHOW` commands are a bit different
 		// and do not support using placeholders for
@@ -108,7 +112,21 @@ func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" {
-		// TODO: list all tables
+		response := Response{
+			"response": Response{
+				"tables": h.TablesNames,
+			},
+		}
+		str, err := json.Marshal(response)
+		//fmt.Printf("response:%s\b", str)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "%s", errors.Wrap(err, "Could not serialize response to JSON"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write(str)
+		return
 	}
 }
 
