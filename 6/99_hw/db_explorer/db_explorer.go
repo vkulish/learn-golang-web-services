@@ -146,6 +146,58 @@ func (h *Handler) checkTableExistance(w http.ResponseWriter, tableName string) b
 	return true
 }
 
+func (h *Handler) listTables(w http.ResponseWriter) {
+	response := Response{
+		"response": Response{
+			"tables": h.TablesNames,
+		},
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(response.Bytes())
+}
+
+func (h *Handler) processSelectedRows(w http.ResponseWriter, tableName string, rows *sql.Rows) ([]interface{}, error) {
+	var tableInfo = h.Tables[tableName]
+	var count = len(tableInfo.Columns)
+	values := make([]interface{}, count)
+	data := make([]interface{}, count)
+
+	var records = make([]interface{}, 0, 5)
+	for rows.Next() {
+		for i := range tableInfo.Columns {
+			data[i] = &values[i]
+		}
+		err := rows.Scan(data...)
+		if err != nil {
+			var finalError = errors.Wrap(err, "Could not scan values from table "+tableName)
+			fmt.Printf("%s", finalError)
+			w.WriteHeader(http.StatusInternalServerError)
+			return nil, finalError
+		}
+
+		var valuesMap = make(map[string]interface{})
+		for idx, item := range data {
+			switch item.(type) {
+			case *interface{}:
+				ptr := *item.(*interface{})
+				switch T := ptr.(type) {
+				case int64:
+					valuesMap[tableInfo.Columns[idx].Name] = T
+				case []uint8:
+					valuesMap[tableInfo.Columns[idx].Name] = string(T)
+				default:
+					valuesMap[tableInfo.Columns[idx].Name] = nil
+				}
+			default:
+				continue
+			}
+		}
+		records = append(records, valuesMap)
+	}
+	return records, nil
+}
+
 func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query url.Values) {
 	if !h.checkTableExistance(w, tableName) {
 		return
@@ -168,44 +220,11 @@ func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query
 	}
 	defer rows.Close()
 
-	var tableInfo = h.Tables[tableName]
-	var count = len(tableInfo.Columns)
-	values := make([]interface{}, count)
-	data := make([]interface{}, count)
-
-	var records = make([]interface{}, 0, 5)
-	for rows.Next() {
-		for i := range tableInfo.Columns {
-			data[i] = &values[i]
-		}
-		err := rows.Scan(data...)
-		if err != nil {
-			fmt.Printf("%s", errors.Wrap(err, "Could not scan values from table "+tableName))
-			rows.Close()
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		var valuesMap = make(map[string]interface{})
-		for idx, item := range data {
-			switch item.(type) {
-			case *interface{}:
-				ptr := *item.(*interface{})
-				switch ptr.(type) {
-				case int64:
-					valuesMap[tableInfo.Columns[idx].Name] = ptr.(int64)
-				case []uint8:
-					valuesMap[tableInfo.Columns[idx].Name] = string(ptr.([]uint8))
-				default:
-					valuesMap[tableInfo.Columns[idx].Name] = nil
-					//fmt.Printf("\titem %d type %T\n", idx, T)
-				}
-			default:
-				continue
-			}
-		}
-		records = append(records, valuesMap)
-		//response["response"].(Response)["records"] = append(response["response"].(Response)["records"], valuesMap)
+	records, err := h.processSelectedRows(w, tableName, rows)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Println(err)
+		return
 	}
 
 	var response = Response{
@@ -213,27 +232,14 @@ func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query
 			"records": records,
 		},
 	}
-	//response["response"].(Response)["records"] = records
 
 	w.WriteHeader(http.StatusOK)
 	w.Write(response.Bytes())
 }
 
 func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" { // List all tables
-		response := Response{
-			"response": Response{
-				"tables": h.TablesNames,
-			},
-		}
-		str, err := json.Marshal(response)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "%s", errors.Wrap(err, "Could not serialize response to JSON"))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write(str)
+	if r.URL.Path == "/" {
+		h.listTables(w)
 		return
 	}
 
@@ -248,17 +254,40 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 		if !h.checkTableExistance(w, tableName) {
 			return
 		}
-		//TODO: request DB for a particular item
-		rows, err := h.Db.Query("SELECT * FROM ? WHERE id = ?", tableName, itemId)
+		
+		rows, err := h.Db.Query(fmt.Sprintf("SELECT * FROM %s WHERE id = ?", tableName), itemId)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, "%s", errors.Wrap(err, fmt.Sprintf("unable to get data from `%s` table", itemId)))
 			return
 		}
-		for rows.Next() {
+		defer rows.Close()
 
+		records, err := h.processSelectedRows(w, tableName, rows)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Println(err)
+			return
 		}
-		rows.Close()
+
+		if len(records) == 0 {
+			fmt.Println("Could not find requested element with ID=" + itemId)
+			var response = Response{
+				"error": "record not found",
+			}
+			w.WriteHeader(http.StatusNotFound)
+			w.Write(response.Bytes())
+			return
+		}
+
+		var response = Response{
+			"response": Response{
+				"record": records[0],
+			},
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write(response.Bytes())
 	}
 }
 
