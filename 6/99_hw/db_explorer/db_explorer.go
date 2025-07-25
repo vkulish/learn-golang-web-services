@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -54,6 +55,8 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 		return h, errors.Wrap(err, "unable to get tables list from the DB")
 	}
 
+	defer rows.Close()
+
 	for rows.Next() {
 		var name string
 		err := rows.Scan(&name)
@@ -63,7 +66,6 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 		}
 		h.TablesNames = append(h.TablesNames, name)
 	}
-	rows.Close()
 
 	fmt.Printf("Found tables: %v\n", h.TablesNames)
 
@@ -78,6 +80,8 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 		if err != nil {
 			return h, errors.Wrap(err, fmt.Sprintf("unable to get columns for the table %s", tableName))
 		}
+		defer rows.Close()
+
 		var table tableInfo
 		table.Name = tableName
 		table.Columns = make([]columnInfo, 0, 3)
@@ -110,9 +114,7 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 			table.Columns = append(table.Columns, info)
 		}
 		fmt.Println("\tGot columns:", len(table.Columns))
-		rows.Close()
 		h.Tables[tableName] = table
-		rows.Close()
 	}
 
 	return h, nil
@@ -254,7 +256,7 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 		if !h.checkTableExistance(w, tableName) {
 			return
 		}
-		
+
 		rows, err := h.Db.Query(fmt.Sprintf("SELECT * FROM %s WHERE id = ?", tableName), itemId)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -271,7 +273,7 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(records) == 0 {
-			fmt.Println("Could not find requested element with ID=" + itemId)
+			fmt.Println("\tCould not find requested element with ID=" + itemId)
 			var response = Response{
 				"error": "record not found",
 			}
@@ -292,6 +294,77 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
+	paths := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(paths) != 1 {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	var tableName = paths[0]
+	if !h.checkTableExistance(w, tableName) {
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	defer r.Body.Close()
+
+	req := &Response{}
+	fmt.Println("\tPUT request body:", string(body))
+	err = json.Unmarshal(body, req)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Println("\tUnable to unmarshal body:", err)
+		return
+	}
+
+	var info = h.Tables[tableName]
+	var columnsToInsert string
+	var substitutionMask string
+	var values = make([]interface{}, 0, len(info.Columns))
+	var firstCol bool = true
+	for _, colInfo := range info.Columns {
+		value := (*req)[colInfo.Name]
+		if value == nil {
+			continue
+		}
+
+		if !firstCol {
+			columnsToInsert += ", "
+			substitutionMask += ", "
+		}
+		firstCol = false
+
+		columnsToInsert += colInfo.Name
+		substitutionMask += "?"
+		values = append(values, value)
+	}
+
+	var insertStatement = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableName, columnsToInsert, substitutionMask)
+	fmt.Println("\tput command:", insertStatement)
+
+	result, err := h.Db.Exec(insertStatement, values...)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to insert to `%s` table", tableName)))
+		return
+	}
+
+	lid, _ := result.LastInsertId()
+	fmt.Println("\tInserted item id:", lid)
+
+	var response = Response{
+		"response": Response{
+			"id": lid,
+		},
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(response.Bytes())
 }
 
 func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
