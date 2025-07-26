@@ -141,6 +141,39 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 }
 
 func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
+	paths := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(paths) != 2 {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	var tableName = paths[0]
+	var itemId = paths[1]
+	if !h.checkTableExistance(w, tableName) {
+		return
+	}
+
+	var deleteStatement = fmt.Sprintf("DELETE FROM %s WHERE id=?", tableName)
+	//fmt.Println("\tdelete command:", updateStatement)
+
+	result, err := h.Db.Exec(deleteStatement, itemId)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to delete item id: %s", itemId)))
+		return
+	}
+
+	deleted, _ := result.RowsAffected()
+	fmt.Println("\tRows deleted:", deleted)
+
+	var response = Response{
+		"response": Response{
+			"deleted": deleted,
+		},
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(response.Bytes())
 }
 
 func (h *Handler) checkTableExistance(w http.ResponseWriter, tableName string) bool {
@@ -458,7 +491,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	values = append(values, itemId)
 
 	var updateStatement = fmt.Sprintf("UPDATE %s SET %s WHERE id=?", tableName, setPattern)
-	fmt.Println("\tupdate command:", updateStatement)
+	//fmt.Println("\tupdate command:", updateStatement)
 
 	result, err := h.Db.Exec(updateStatement, values...)
 	if err != nil {
