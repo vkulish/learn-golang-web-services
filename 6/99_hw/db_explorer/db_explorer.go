@@ -17,8 +17,9 @@ import (
 )
 
 type columnInfo struct {
-	Name string
-	Type string
+	Name      string
+	Type      string
+	MayBeNull bool
 }
 
 type tableInfo struct {
@@ -41,6 +42,23 @@ func (resp *Response) Bytes() []byte {
 		return nil
 	}
 	return str
+}
+
+func validateItemType(colInfo *columnInfo, value interface{}) bool {
+	fmt.Printf("\tCompare value type. expected: %s, current: %T\n", colInfo.Type, value)
+	var typesEqual bool
+	switch value.(type) {
+	case string:
+		typesEqual = colInfo.Type == "varchar(255)" || colInfo.Type == "text"
+	case int64:
+		typesEqual = colInfo.Type == "int"
+	case nil:
+		typesEqual = colInfo.MayBeNull
+	default:
+		typesEqual = false
+	}
+
+	return typesEqual
 }
 
 func NewDbExplorer(db *sql.DB) (Handler, error) {
@@ -91,13 +109,14 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 		var fields [7]any
 		for rows.Next() {
 			var (
-				name string
-				tp   string
+				name     string
+				tp       string
+				nullable string
 			)
 			err = rows.Scan(&name, // Field
 				&tp,        // Type
 				&fields[0], // Collation
-				&fields[1], // Null
+				&nullable,  // Null
 				&fields[2], // Key
 				&fields[3], // Default
 				&fields[4], // Extra
@@ -110,6 +129,7 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 			var info columnInfo
 			info.Name = name
 			info.Type = tp
+			info.MayBeNull = nullable == "YES"
 			//fmt.Printf("\tColumn: %v\n", info)
 			table.Columns = append(table.Columns, info)
 		}
@@ -368,6 +388,96 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
+	paths := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(paths) != 2 {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	var tableName = paths[0]
+	var itemId = paths[1]
+	if !h.checkTableExistance(w, tableName) {
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	defer r.Body.Close()
+
+	req := Response{}
+	fmt.Println("\tPOST request body:", string(body))
+	err = json.Unmarshal(body, &req)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Println("\tUnable to unmarshal body:", err)
+		return
+	}
+
+	var reportBadField = func(fldName string) {
+		var errResponce = Response{
+			"error": fmt.Sprintf("field %s have invalid type", fldName),
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(errResponce.Bytes())
+	}
+
+	var info = h.Tables[tableName]
+	var setPattern string
+	var values = make([]interface{}, 0, len(info.Columns))
+	var firstCol = true
+	for _, colInfo := range info.Columns {
+		value, ok := req[colInfo.Name]
+		if !ok {
+			continue
+		}
+
+		if colInfo.Name == "id" {
+			// Found an attempt to change primary key
+			reportBadField(colInfo.Name)
+			return
+		}
+
+		if !validateItemType(&colInfo, value) {
+			// Found a type mismatch
+			reportBadField(colInfo.Name)
+			return
+		}
+
+		if !firstCol {
+			setPattern += ", "
+		}
+		firstCol = false
+
+		setPattern += colInfo.Name + "=?"
+		values = append(values, value)
+	}
+	values = append(values, itemId)
+
+	var updateStatement = fmt.Sprintf("UPDATE %s SET %s WHERE id=?", tableName, setPattern)
+	fmt.Println("\tupdate command:", updateStatement)
+
+	result, err := h.Db.Exec(updateStatement, values...)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to update item id: %s", itemId)))
+		return
+	}
+
+	updated, _ := result.RowsAffected()
+	fmt.Println("\tRows affected:", updated)
+
+	var response = Response{
+		"response": Response{
+			"updated": updated,
+		},
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(response.Bytes())
 }
 
 // Entry point for Handler: routing starts here
