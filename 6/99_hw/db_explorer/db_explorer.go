@@ -17,14 +17,25 @@ import (
 )
 
 type columnInfo struct {
-	Name      string
-	Type      string
-	MayBeNull bool
+	Name         string
+	Type         string
+	MayBeNull    bool
+	IsKey        bool // column is a PK
+	DefaultValue any
 }
 
 type tableInfo struct {
 	Name    string
 	Columns []columnInfo
+}
+
+func (tbl tableInfo) getPrimaryKeyColumn() string {
+	for _, info := range tbl.Columns {
+		if info.IsKey {
+			return info.Name
+		}
+	}
+	return "id"
 }
 
 type Handler struct {
@@ -59,6 +70,18 @@ func validateItemType(colInfo *columnInfo, value interface{}) bool {
 	}
 
 	return typesEqual
+}
+
+func defaultValueForType(columnType string) any {
+	switch columnType {
+	case "varchar(255)":
+		return string(``)
+	case "text":
+		return string(``)
+	case "int":
+		return 0
+	}
+	return nil
 }
 
 func NewDbExplorer(db *sql.DB) (Handler, error) {
@@ -112,13 +135,15 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 				name     string
 				tp       string
 				nullable string
+				key      string
+				defValue any
 			)
 			err = rows.Scan(&name, // Field
 				&tp,        // Type
 				&fields[0], // Collation
 				&nullable,  // Null
-				&fields[2], // Key
-				&fields[3], // Default
+				&key,       // Key
+				&defValue,  // Default
 				&fields[4], // Extra
 				&fields[5], // Privilges
 				&fields[6]) // Comment
@@ -130,7 +155,9 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 			info.Name = name
 			info.Type = tp
 			info.MayBeNull = nullable == "YES"
-			//fmt.Printf("\tColumn: %v\n", info)
+			info.IsKey = key == "PRI"
+			info.DefaultValue = defValue
+			fmt.Printf("\tColumn: %v, key: %s, default: %v\n", info, key, defValue)
 			table.Columns = append(table.Columns, info)
 		}
 		fmt.Println("\tGot columns:", len(table.Columns))
@@ -153,9 +180,8 @@ func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var deleteStatement = fmt.Sprintf("DELETE FROM %s WHERE id=?", tableName)
-	//fmt.Println("\tdelete command:", updateStatement)
-
+	var pkey = h.Tables[tableName].getPrimaryKeyColumn()
+	var deleteStatement = fmt.Sprintf("DELETE FROM %s WHERE %s=?", tableName, pkey)
 	result, err := h.Db.Exec(deleteStatement, itemId)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -191,7 +217,7 @@ func (h *Handler) checkTableExistance(w http.ResponseWriter, tableName string) b
 		str, err := json.Marshal(response)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "%s", errors.Wrap(err, "Could not serialize response to JSON"))
+			fmt.Println(errors.Wrap(err, "Could not serialize response to JSON"))
 			return false
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -310,10 +336,11 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		rows, err := h.Db.Query(fmt.Sprintf("SELECT * FROM %s WHERE id = ?", tableName), itemId)
+		var pkey = h.Tables[tableName].getPrimaryKeyColumn()
+		rows, err := h.Db.Query(fmt.Sprintf("SELECT * FROM %s WHERE %s = ?", tableName, pkey), itemId)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "%s", errors.Wrap(err, fmt.Sprintf("unable to get data from `%s` table", itemId)))
+			fmt.Println("Got error:", errors.Wrap(err, fmt.Sprintf("unable to get data from `%s` table", itemId)))
 			return
 		}
 		defer rows.Close()
@@ -321,7 +348,7 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 		records, err := h.processSelectedRows(w, tableName, rows)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Println(err)
+			fmt.Println("Got error:", err)
 			return
 		}
 
@@ -363,12 +390,11 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-
 	defer r.Body.Close()
 
-	req := &Response{}
+	req := Response{}
 	fmt.Println("\tPUT request body:", string(body))
-	err = json.Unmarshal(body, req)
+	err = json.Unmarshal(body, &req)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Println("\tUnable to unmarshal body:", err)
@@ -381,9 +407,18 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	var values = make([]interface{}, 0, len(info.Columns))
 	var firstCol bool = true
 	for _, colInfo := range info.Columns {
-		value := (*req)[colInfo.Name]
-		if value == nil {
-			continue
+		value, found := req[colInfo.Name]
+		if !found {
+			// The column has no value presented in
+			// the request so generate value when there is
+			// no default value provided in the DB.
+			fmt.Println("\tdefault value for", colInfo.Name, "is", colInfo.DefaultValue, "type:", colInfo.Type)
+			//if colInfo.DefaultValue != nil {
+			//	value = colInfo.DefaultValue
+			//} else {
+			//	value = defaultValueForType(colInfo.Type)
+			//}
+			value = nil
 		}
 
 		if !firstCol {
@@ -399,11 +434,12 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 
 	var insertStatement = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableName, columnsToInsert, substitutionMask)
 	fmt.Println("\tput command:", insertStatement)
+	fmt.Printf("\tvalues %+v\n", values...)
 
 	result, err := h.Db.Exec(insertStatement, values...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to insert to `%s` table", tableName)))
+		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to insert into %s", tableName)))
 		return
 	}
 
@@ -490,9 +526,8 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	values = append(values, itemId)
 
-	var updateStatement = fmt.Sprintf("UPDATE %s SET %s WHERE id=?", tableName, setPattern)
-	//fmt.Println("\tupdate command:", updateStatement)
-
+	var pkey = h.Tables[tableName].getPrimaryKeyColumn()
+	var updateStatement = fmt.Sprintf("UPDATE %s SET %s WHERE %s=?", tableName, setPattern, pkey)
 	result, err := h.Db.Exec(updateStatement, values...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
