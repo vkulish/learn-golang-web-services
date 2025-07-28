@@ -45,9 +45,9 @@ type Handler struct {
 	Tables      map[string]tableInfo
 }
 
-type Response map[string]interface{}
+type DataToExchange map[string]interface{}
 
-func (resp *Response) Bytes() []byte {
+func (resp *DataToExchange) Bytes() []byte {
 	str, err := json.Marshal(resp)
 	if err != nil {
 		return nil
@@ -56,7 +56,6 @@ func (resp *Response) Bytes() []byte {
 }
 
 func validateItemType(colInfo *columnInfo, value interface{}) bool {
-	fmt.Printf("\tCompare value type. expected: %s, current: %T\n", colInfo.Type, value)
 	var typesEqual bool
 	switch value.(type) {
 	case string:
@@ -127,8 +126,6 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 		table.Name = tableName
 		table.Columns = make([]columnInfo, 0, 3)
 
-		// TODO: replace this ugly code by
-		// https://golang.org/pkg/database/sql/#Rows.ColumnTypes
 		var fields [7]any
 		for rows.Next() {
 			var (
@@ -157,10 +154,10 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 			info.MayBeNull = nullable == "YES"
 			info.IsKey = key == "PRI"
 			info.DefaultValue = defValue
-			fmt.Printf("\tColumn: %v, key: %s, default: %v\n", info, key, defValue)
+			//fmt.Printf("\tColumn: %v, key: %s, default: %v\n", info, key, defValue)
 			table.Columns = append(table.Columns, info)
 		}
-		fmt.Println("\tGot columns:", len(table.Columns))
+		//fmt.Println("\tGot columns:", len(table.Columns))
 		h.Tables[tableName] = table
 	}
 
@@ -190,10 +187,9 @@ func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	deleted, _ := result.RowsAffected()
-	fmt.Println("\tRows deleted:", deleted)
 
-	var response = Response{
-		"response": Response{
+	var response = DataToExchange{
+		"response": DataToExchange{
 			"deleted": deleted,
 		},
 	}
@@ -211,7 +207,7 @@ func (h *Handler) checkTableExistance(w http.ResponseWriter, tableName string) b
 		}
 	}
 	if !tableFound {
-		response := Response{
+		response := DataToExchange{
 			"error": "unknown table",
 		}
 		str, err := json.Marshal(response)
@@ -228,8 +224,8 @@ func (h *Handler) checkTableExistance(w http.ResponseWriter, tableName string) b
 }
 
 func (h *Handler) listTables(w http.ResponseWriter) {
-	response := Response{
-		"response": Response{
+	response := DataToExchange{
+		"response": DataToExchange{
 			"tables": h.TablesNames,
 		},
 	}
@@ -284,13 +280,14 @@ func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query
 		return
 	}
 
-	var limit int = 5
-	var offset int = 0
-	if query.Has("limit") {
-		limit, _ = strconv.Atoi(query.Get("limit"))
+	limit, err := strconv.Atoi(query.Get("limit"))
+	if err != nil {
+		limit = 5
 	}
-	if query.Has("offset") {
-		offset, _ = strconv.Atoi(query.Get("offset"))
+
+	offset, err := strconv.Atoi(query.Get("offset"))
+	if err != nil {
+		offset = 0
 	}
 
 	rows, err := h.Db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT ? OFFSET ?", tableName), limit, offset)
@@ -308,8 +305,8 @@ func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query
 		return
 	}
 
-	var response = Response{
-		"response": Response{
+	var response = DataToExchange{
+		"response": DataToExchange{
 			"records": records,
 		},
 	}
@@ -354,7 +351,7 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 
 		if len(records) == 0 {
 			fmt.Println("\tCould not find requested element with ID=" + itemId)
-			var response = Response{
+			var response = DataToExchange{
 				"error": "record not found",
 			}
 			w.WriteHeader(http.StatusNotFound)
@@ -362,8 +359,8 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var response = Response{
-			"response": Response{
+		var response = DataToExchange{
+			"response": DataToExchange{
 				"record": records[0],
 			},
 		}
@@ -392,8 +389,7 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	req := Response{}
-	fmt.Println("\tPUT request body:", string(body))
+	req := DataToExchange{}
 	err = json.Unmarshal(body, &req)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -412,13 +408,11 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 			// The column has no value presented in
 			// the request so generate value when there is
 			// no default value provided in the DB.
-			fmt.Println("\tdefault value for", colInfo.Name, "is", colInfo.DefaultValue, "type:", colInfo.Type)
-			//if colInfo.DefaultValue != nil {
-			//	value = colInfo.DefaultValue
-			//} else {
-			//	value = defaultValueForType(colInfo.Type)
-			//}
-			value = nil
+			if colInfo.DefaultValue != nil {
+				value = colInfo.DefaultValue
+			} else if !colInfo.MayBeNull {
+				value = defaultValueForType(colInfo.Type)
+			}
 		}
 
 		if !firstCol {
@@ -433,9 +427,6 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var insertStatement = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableName, columnsToInsert, substitutionMask)
-	fmt.Println("\tput command:", insertStatement)
-	fmt.Printf("\tvalues %+v\n", values...)
-
 	result, err := h.Db.Exec(insertStatement, values...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -446,9 +437,10 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	lid, _ := result.LastInsertId()
 	fmt.Println("\tInserted item id:", lid)
 
-	var response = Response{
-		"response": Response{
-			"id": lid,
+	var pkey = h.Tables[tableName].getPrimaryKeyColumn()
+	var response = DataToExchange{
+		"response": DataToExchange{
+			pkey: lid,
 		},
 	}
 
@@ -477,8 +469,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 
 	defer r.Body.Close()
 
-	req := Response{}
-	fmt.Println("\tPOST request body:", string(body))
+	req := DataToExchange{}
 	err = json.Unmarshal(body, &req)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -487,7 +478,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var reportBadField = func(fldName string) {
-		var errResponce = Response{
+		var errResponce = DataToExchange{
 			"error": fmt.Sprintf("field %s have invalid type", fldName),
 		}
 		w.WriteHeader(http.StatusBadRequest)
@@ -495,6 +486,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var info = h.Tables[tableName]
+	var pkey = info.getPrimaryKeyColumn()
 	var setPattern string
 	var values = make([]interface{}, 0, len(info.Columns))
 	var firstCol = true
@@ -504,7 +496,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if colInfo.Name == "id" {
+		if colInfo.Name == pkey {
 			// Found an attempt to change primary key
 			reportBadField(colInfo.Name)
 			return
@@ -526,7 +518,6 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	values = append(values, itemId)
 
-	var pkey = h.Tables[tableName].getPrimaryKeyColumn()
 	var updateStatement = fmt.Sprintf("UPDATE %s SET %s WHERE %s=?", tableName, setPattern, pkey)
 	result, err := h.Db.Exec(updateStatement, values...)
 	if err != nil {
@@ -538,8 +529,8 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	updated, _ := result.RowsAffected()
 	fmt.Println("\tRows affected:", updated)
 
-	var response = Response{
-		"response": Response{
+	var response = DataToExchange{
+		"response": DataToExchange{
 			"updated": updated,
 		},
 	}
