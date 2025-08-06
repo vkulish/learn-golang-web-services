@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -59,26 +60,32 @@ func (resp *DataToExchange) Bytes() []byte {
 	return str
 }
 
+func isColumnTypeText(columnType string) bool {
+	// full list of the MySQL string data types is here:
+	// https://dev.mysql.com/doc/refman/8.4/en/string-types.html
+	res, _ := regexp.Match("text|tinytext|mediumtext|longtext|varchar.*", []byte(columnType))
+	return res
+}
+
 func validateItemType(colInfo *columnInfo, value any) bool {
-	var typesEqual bool
 	switch value.(type) {
 	case string:
-		typesEqual = colInfo.Type == "varchar(255)" || colInfo.Type == "text"
+		return isColumnTypeText(colInfo.Type)
 	case int64:
-		typesEqual = colInfo.Type == "int"
+		return colInfo.Type == "int"
 	case nil:
-		typesEqual = colInfo.MayBeNull
+		return colInfo.MayBeNull
 	default:
-		typesEqual = false
+		return false
 	}
-
-	return typesEqual
 }
 
 func defaultValueForType(columnType string) any {
-	switch columnType {
-	case "varchar(255)":
+	if isColumnTypeText(columnType) {
 		return string(``)
+	}
+
+	switch columnType {
 	case "text":
 		return string(``)
 	case "int":
