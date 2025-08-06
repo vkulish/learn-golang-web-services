@@ -39,6 +39,10 @@ func (tbl tableInfo) getPrimaryKeyColumn() string {
 }
 
 type Handler struct {
+	manager Manager
+}
+
+type Manager struct {
 	DB *sql.DB
 
 	TablesNames []string // TODO: make it sorted
@@ -84,13 +88,14 @@ func defaultValueForType(columnType string) any {
 }
 
 func NewDbExplorer(db *sql.DB) (*Handler, error) {
-	var h Handler
-	h.DB = db
-	h.TablesNames = make([]string, 0, 5)
-	h.Tables = make(map[string]tableInfo)
+	h := Handler{}
+	manager := &h.manager
+	manager.DB = db
+	manager.TablesNames = make([]string, 0, 5)
+	manager.Tables = make(map[string]tableInfo)
 
 	// STEP 1: get tables list
-	rows, err := h.DB.Query("SHOW TABLES")
+	rows, err := manager.DB.Query("SHOW TABLES")
 	if err != nil {
 		return &h, errors.Wrap(err, "unable to get tables list from the DB")
 	}
@@ -104,19 +109,19 @@ func NewDbExplorer(db *sql.DB) (*Handler, error) {
 			rows.Close()
 			return &h, errors.Wrap(err, "unable to get table name")
 		}
-		h.TablesNames = append(h.TablesNames, name)
+		manager.TablesNames = append(manager.TablesNames, name)
 	}
 
-	fmt.Printf("Found tables: %v\n", h.TablesNames)
+	fmt.Printf("Found tables: %v\n", manager.TablesNames)
 
 	// STEP 2: get columns info for each table
-	for _, tableName := range h.TablesNames {
+	for _, tableName := range manager.TablesNames {
 		fmt.Println("Getting columns info for table:", tableName)
 		// In MySQL, the `SHOW` commands are a bit different
 		// and do not support placeholders for
 		// identifiers (like table names, column names) in prepared statements.
 		// So build the query string by hand, it`s safe here.
-		rows, err := h.DB.Query("SHOW FULL COLUMNS FROM " + tableName)
+		rows, err := manager.DB.Query("SHOW FULL COLUMNS FROM " + tableName)
 		if err != nil {
 			return &h, errors.Wrap(err, fmt.Sprintf("unable to get columns for the table %s", tableName))
 		}
@@ -159,13 +164,13 @@ func NewDbExplorer(db *sql.DB) (*Handler, error) {
 			table.Columns = append(table.Columns, info)
 		}
 		//fmt.Println("\tGot columns:", len(table.Columns))
-		h.Tables[tableName] = table
+		manager.Tables[tableName] = table
 	}
 
 	return &h, nil
 }
 
-func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
+func (mgr *Manager) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 	paths := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(paths) != 2 {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -174,13 +179,13 @@ func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 
 	tableName := paths[0]
 	itemId := paths[1]
-	if !h.checkTableExistance(w, tableName) {
+	if !mgr.checkTableExistance(w, tableName) {
 		return
 	}
 
-	pkey := h.Tables[tableName].getPrimaryKeyColumn()
+	pkey := mgr.Tables[tableName].getPrimaryKeyColumn()
 	deleteStatement := fmt.Sprintf("DELETE FROM %s WHERE %s=?", tableName, pkey)
-	result, err := h.DB.Exec(deleteStatement, itemId)
+	result, err := mgr.DB.Exec(deleteStatement, itemId)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to delete item id: %s", itemId)))
@@ -199,9 +204,9 @@ func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 	w.Write(response.Bytes())
 }
 
-func (h *Handler) checkTableExistance(w http.ResponseWriter, tableName string) bool {
+func (mgr *Manager) checkTableExistance(w http.ResponseWriter, tableName string) bool {
 	var tableFound bool
-	for _, table := range h.TablesNames {
+	for _, table := range mgr.TablesNames {
 		if table == tableName {
 			tableFound = true
 			break
@@ -221,10 +226,10 @@ func (h *Handler) checkTableExistance(w http.ResponseWriter, tableName string) b
 	return true
 }
 
-func (h *Handler) listTables(w http.ResponseWriter) {
+func (mgr *Manager) listTables(w http.ResponseWriter) {
 	response := DataToExchange{
 		"response": DataToExchange{
-			"tables": h.TablesNames,
+			"tables": mgr.TablesNames,
 		},
 	}
 
@@ -232,8 +237,8 @@ func (h *Handler) listTables(w http.ResponseWriter) {
 	w.Write(response.Bytes())
 }
 
-func (h *Handler) processSelectedRows(w http.ResponseWriter, tableName string, rows *sql.Rows) ([]any, error) {
-	tableInfo := h.Tables[tableName]
+func (mgr *Manager) processSelectedRows(w http.ResponseWriter, tableName string, rows *sql.Rows) ([]any, error) {
+	tableInfo := mgr.Tables[tableName]
 	count := len(tableInfo.Columns)
 	values := make([]any, count)
 	data := make([]any, count)
@@ -273,8 +278,8 @@ func (h *Handler) processSelectedRows(w http.ResponseWriter, tableName string, r
 	return records, nil
 }
 
-func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query url.Values) {
-	if !h.checkTableExistance(w, tableName) {
+func (mgr *Manager) selectRecordSet(w http.ResponseWriter, tableName string, query url.Values) {
+	if !mgr.checkTableExistance(w, tableName) {
 		return
 	}
 
@@ -288,7 +293,7 @@ func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query
 		offset = 0
 	}
 
-	rows, err := h.DB.Query(fmt.Sprintf("SELECT * FROM %s LIMIT ? OFFSET ?", tableName), limit, offset)
+	rows, err := mgr.DB.Query(fmt.Sprintf("SELECT * FROM %s LIMIT ? OFFSET ?", tableName), limit, offset)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Printf("%s", errors.Wrap(err, "Could not select from table "+tableName))
@@ -296,7 +301,7 @@ func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query
 	}
 	defer rows.Close()
 
-	records, err := h.processSelectedRows(w, tableName, rows)
+	records, err := mgr.processSelectedRows(w, tableName, rows)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Println(err)
@@ -313,9 +318,9 @@ func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query
 	w.Write(response.Bytes())
 }
 
-func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
+func (mgr *Manager) processGetRequest(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" {
-		h.listTables(w)
+		mgr.listTables(w)
 		return
 	}
 
@@ -323,16 +328,16 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("\tGot paths:", paths, "len:", len(paths))
 	if len(paths) == 1 { // have a form like "GET /$table?limit=5&offset=7"
 		tableName := paths[0]
-		h.selectRecordSet(w, tableName, r.URL.Query())
+		mgr.selectRecordSet(w, tableName, r.URL.Query())
 	} else if len(paths) == 2 {
 		tableName := paths[0]
 		itemId := paths[1]
-		if !h.checkTableExistance(w, tableName) {
+		if !mgr.checkTableExistance(w, tableName) {
 			return
 		}
 
-		pkey := h.Tables[tableName].getPrimaryKeyColumn()
-		rows, err := h.DB.Query(fmt.Sprintf("SELECT * FROM %s WHERE %s = ?", tableName, pkey), itemId)
+		pkey := mgr.Tables[tableName].getPrimaryKeyColumn()
+		rows, err := mgr.DB.Query(fmt.Sprintf("SELECT * FROM %s WHERE %s = ?", tableName, pkey), itemId)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Println("Got error:", errors.Wrap(err, fmt.Sprintf("unable to get data from `%s` table", itemId)))
@@ -340,7 +345,7 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		defer rows.Close()
 
-		records, err := h.processSelectedRows(w, tableName, rows)
+		records, err := mgr.processSelectedRows(w, tableName, rows)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Println("Got error:", err)
@@ -368,7 +373,7 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
+func (mgr *Manager) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	paths := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(paths) != 1 {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -376,7 +381,7 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tableName := paths[0]
-	if !h.checkTableExistance(w, tableName) {
+	if !mgr.checkTableExistance(w, tableName) {
 		return
 	}
 
@@ -395,7 +400,7 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info := h.Tables[tableName]
+	info := mgr.Tables[tableName]
 	var columnsToInsert string
 	var substitutionMask string
 	values := make([]any, 0, len(info.Columns))
@@ -425,7 +430,7 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	insertStatement := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableName, columnsToInsert, substitutionMask)
-	result, err := h.DB.Exec(insertStatement, values...)
+	result, err := mgr.DB.Exec(insertStatement, values...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to insert into %s", tableName)))
@@ -435,7 +440,7 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	lid, _ := result.LastInsertId()
 	fmt.Println("\tInserted item id:", lid)
 
-	pkey := h.Tables[tableName].getPrimaryKeyColumn()
+	pkey := mgr.Tables[tableName].getPrimaryKeyColumn()
 	response := DataToExchange{
 		"response": DataToExchange{
 			pkey: lid,
@@ -446,7 +451,7 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	w.Write(response.Bytes())
 }
 
-func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
+func (mgr *Manager) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	paths := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(paths) != 2 {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -455,7 +460,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 
 	tableName := paths[0]
 	itemId := paths[1]
-	if !h.checkTableExistance(w, tableName) {
+	if !mgr.checkTableExistance(w, tableName) {
 		return
 	}
 
@@ -484,7 +489,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var setPattern string
-	info := h.Tables[tableName]
+	info := mgr.Tables[tableName]
 	pkey := info.getPrimaryKeyColumn()
 	values := make([]any, 0, len(info.Columns))
 	firstCol := true
@@ -517,7 +522,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	values = append(values, itemId)
 
 	updateStatement := fmt.Sprintf("UPDATE %s SET %s WHERE %s=?", tableName, setPattern, pkey)
-	result, err := h.DB.Exec(updateStatement, values...)
+	result, err := mgr.DB.Exec(updateStatement, values...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to update item id: %s", itemId)))
@@ -542,12 +547,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Processing URL:", r.URL.String(), "Method:", r.Method)
 	switch r.Method {
 	case http.MethodDelete:
-		h.processDeleteRequest(w, r)
+		h.manager.processDeleteRequest(w, r)
 	case http.MethodGet:
-		h.processGetRequest(w, r)
+		h.manager.processGetRequest(w, r)
 	case http.MethodPut:
-		h.processPutRequest(w, r)
+		h.manager.processPutRequest(w, r)
 	case http.MethodPost:
-		h.processPostRequest(w, r)
+		h.manager.processPostRequest(w, r)
 	}
 }
