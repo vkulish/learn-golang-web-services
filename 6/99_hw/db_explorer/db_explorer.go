@@ -39,13 +39,13 @@ func (tbl tableInfo) getPrimaryKeyColumn() string {
 }
 
 type Handler struct {
-	Db *sql.DB
+	DB *sql.DB
 
 	TablesNames []string // TODO: make it sorted
 	Tables      map[string]tableInfo
 }
 
-type DataToExchange map[string]interface{}
+type DataToExchange map[string]any
 
 func (resp *DataToExchange) Bytes() []byte {
 	str, err := json.Marshal(resp)
@@ -55,7 +55,7 @@ func (resp *DataToExchange) Bytes() []byte {
 	return str
 }
 
-func validateItemType(colInfo *columnInfo, value interface{}) bool {
+func validateItemType(colInfo *columnInfo, value any) bool {
 	var typesEqual bool
 	switch value.(type) {
 	case string:
@@ -83,16 +83,16 @@ func defaultValueForType(columnType string) any {
 	return nil
 }
 
-func NewDbExplorer(db *sql.DB) (Handler, error) {
+func NewDbExplorer(db *sql.DB) (*Handler, error) {
 	var h Handler
-	h.Db = db
+	h.DB = db
 	h.TablesNames = make([]string, 0, 5)
 	h.Tables = make(map[string]tableInfo)
 
 	// STEP 1: get tables list
-	rows, err := h.Db.Query("SHOW TABLES")
+	rows, err := h.DB.Query("SHOW TABLES")
 	if err != nil {
-		return h, errors.Wrap(err, "unable to get tables list from the DB")
+		return &h, errors.Wrap(err, "unable to get tables list from the DB")
 	}
 
 	defer rows.Close()
@@ -102,7 +102,7 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 		err := rows.Scan(&name)
 		if err != nil {
 			rows.Close()
-			return h, errors.Wrap(err, "unable to get table name")
+			return &h, errors.Wrap(err, "unable to get table name")
 		}
 		h.TablesNames = append(h.TablesNames, name)
 	}
@@ -116,9 +116,9 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 		// and do not support placeholders for
 		// identifiers (like table names, column names) in prepared statements.
 		// So build the query string by hand, it`s safe here.
-		rows, err := h.Db.Query("SHOW FULL COLUMNS FROM " + tableName)
+		rows, err := h.DB.Query("SHOW FULL COLUMNS FROM " + tableName)
 		if err != nil {
-			return h, errors.Wrap(err, fmt.Sprintf("unable to get columns for the table %s", tableName))
+			return &h, errors.Wrap(err, fmt.Sprintf("unable to get columns for the table %s", tableName))
 		}
 		defer rows.Close()
 
@@ -145,15 +145,16 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 				&fields[5], // Privilges
 				&fields[6]) // Comment
 			if err != nil {
-				return h, errors.Wrap(err, fmt.Sprintf("unable to scan column for the table %s", tableName))
+				return &h, errors.Wrap(err, fmt.Sprintf("unable to scan column for the table %s", tableName))
 			}
 			//fmt.Printf("\tFields: %+v", fields)
-			var info columnInfo
-			info.Name = name
-			info.Type = tp
-			info.MayBeNull = nullable == "YES"
-			info.IsKey = key == "PRI"
-			info.DefaultValue = defValue
+			info := columnInfo{
+				Name:         name,
+				Type:         tp,
+				MayBeNull:    nullable == "YES",
+				IsKey:        key == "PRI",
+				DefaultValue: defValue,
+			}
 			//fmt.Printf("\tColumn: %v, key: %s, default: %v\n", info, key, defValue)
 			table.Columns = append(table.Columns, info)
 		}
@@ -161,7 +162,7 @@ func NewDbExplorer(db *sql.DB) (Handler, error) {
 		h.Tables[tableName] = table
 	}
 
-	return h, nil
+	return &h, nil
 }
 
 func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
@@ -171,15 +172,15 @@ func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var tableName = paths[0]
-	var itemId = paths[1]
+	tableName := paths[0]
+	itemId := paths[1]
 	if !h.checkTableExistance(w, tableName) {
 		return
 	}
 
-	var pkey = h.Tables[tableName].getPrimaryKeyColumn()
-	var deleteStatement = fmt.Sprintf("DELETE FROM %s WHERE %s=?", tableName, pkey)
-	result, err := h.Db.Exec(deleteStatement, itemId)
+	pkey := h.Tables[tableName].getPrimaryKeyColumn()
+	deleteStatement := fmt.Sprintf("DELETE FROM %s WHERE %s=?", tableName, pkey)
+	result, err := h.DB.Exec(deleteStatement, itemId)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to delete item id: %s", itemId)))
@@ -188,7 +189,7 @@ func (h *Handler) processDeleteRequest(w http.ResponseWriter, r *http.Request) {
 
 	deleted, _ := result.RowsAffected()
 
-	var response = DataToExchange{
+	response := DataToExchange{
 		"response": DataToExchange{
 			"deleted": deleted,
 		},
@@ -207,17 +208,14 @@ func (h *Handler) checkTableExistance(w http.ResponseWriter, tableName string) b
 		}
 	}
 	if !tableFound {
-		response := DataToExchange{
+		w.WriteHeader(http.StatusNotFound)
+		err := json.NewEncoder(w).Encode(DataToExchange{
 			"error": "unknown table",
-		}
-		str, err := json.Marshal(response)
+		})
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Println(errors.Wrap(err, "Could not serialize response to JSON"))
-			return false
 		}
-		w.WriteHeader(http.StatusNotFound)
-		w.Write(str)
 		return false
 	}
 	return true
@@ -234,13 +232,13 @@ func (h *Handler) listTables(w http.ResponseWriter) {
 	w.Write(response.Bytes())
 }
 
-func (h *Handler) processSelectedRows(w http.ResponseWriter, tableName string, rows *sql.Rows) ([]interface{}, error) {
-	var tableInfo = h.Tables[tableName]
-	var count = len(tableInfo.Columns)
-	values := make([]interface{}, count)
-	data := make([]interface{}, count)
+func (h *Handler) processSelectedRows(w http.ResponseWriter, tableName string, rows *sql.Rows) ([]any, error) {
+	tableInfo := h.Tables[tableName]
+	count := len(tableInfo.Columns)
+	values := make([]any, count)
+	data := make([]any, count)
 
-	var records = make([]interface{}, 0, 5)
+	records := make([]any, 0, 5)
 	for rows.Next() {
 		for i := range tableInfo.Columns {
 			data[i] = &values[i]
@@ -253,11 +251,11 @@ func (h *Handler) processSelectedRows(w http.ResponseWriter, tableName string, r
 			return nil, finalError
 		}
 
-		var valuesMap = make(map[string]interface{})
+		valuesMap := make(map[string]any)
 		for idx, item := range data {
 			switch item.(type) {
-			case *interface{}:
-				ptr := *item.(*interface{})
+			case *any:
+				ptr := *item.(*any)
 				switch T := ptr.(type) {
 				case int64:
 					valuesMap[tableInfo.Columns[idx].Name] = T
@@ -290,7 +288,7 @@ func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query
 		offset = 0
 	}
 
-	rows, err := h.Db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT ? OFFSET ?", tableName), limit, offset)
+	rows, err := h.DB.Query(fmt.Sprintf("SELECT * FROM %s LIMIT ? OFFSET ?", tableName), limit, offset)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Printf("%s", errors.Wrap(err, "Could not select from table "+tableName))
@@ -305,7 +303,7 @@ func (h *Handler) selectRecordSet(w http.ResponseWriter, tableName string, query
 		return
 	}
 
-	var response = DataToExchange{
+	response := DataToExchange{
 		"response": DataToExchange{
 			"records": records,
 		},
@@ -324,17 +322,17 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 	paths := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	fmt.Println("\tGot paths:", paths, "len:", len(paths))
 	if len(paths) == 1 { // have a form like "GET /$table?limit=5&offset=7"
-		var tableName = paths[0]
+		tableName := paths[0]
 		h.selectRecordSet(w, tableName, r.URL.Query())
 	} else if len(paths) == 2 {
-		var tableName = paths[0]
-		var itemId = paths[1]
+		tableName := paths[0]
+		itemId := paths[1]
 		if !h.checkTableExistance(w, tableName) {
 			return
 		}
 
-		var pkey = h.Tables[tableName].getPrimaryKeyColumn()
-		rows, err := h.Db.Query(fmt.Sprintf("SELECT * FROM %s WHERE %s = ?", tableName, pkey), itemId)
+		pkey := h.Tables[tableName].getPrimaryKeyColumn()
+		rows, err := h.DB.Query(fmt.Sprintf("SELECT * FROM %s WHERE %s = ?", tableName, pkey), itemId)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Println("Got error:", errors.Wrap(err, fmt.Sprintf("unable to get data from `%s` table", itemId)))
@@ -351,7 +349,7 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 
 		if len(records) == 0 {
 			fmt.Println("\tCould not find requested element with ID=" + itemId)
-			var response = DataToExchange{
+			response := DataToExchange{
 				"error": "record not found",
 			}
 			w.WriteHeader(http.StatusNotFound)
@@ -359,7 +357,7 @@ func (h *Handler) processGetRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var response = DataToExchange{
+		response := DataToExchange{
 			"response": DataToExchange{
 				"record": records[0],
 			},
@@ -377,7 +375,7 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var tableName = paths[0]
+	tableName := paths[0]
 	if !h.checkTableExistance(w, tableName) {
 		return
 	}
@@ -389,7 +387,7 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	req := DataToExchange{}
+	var req DataToExchange
 	err = json.Unmarshal(body, &req)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -397,11 +395,11 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var info = h.Tables[tableName]
+	info := h.Tables[tableName]
 	var columnsToInsert string
 	var substitutionMask string
-	var values = make([]interface{}, 0, len(info.Columns))
-	var firstCol bool = true
+	values := make([]any, 0, len(info.Columns))
+	firstCol := true
 	for _, colInfo := range info.Columns {
 		value, found := req[colInfo.Name]
 		if !found {
@@ -426,8 +424,8 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 		values = append(values, value)
 	}
 
-	var insertStatement = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableName, columnsToInsert, substitutionMask)
-	result, err := h.Db.Exec(insertStatement, values...)
+	insertStatement := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableName, columnsToInsert, substitutionMask)
+	result, err := h.DB.Exec(insertStatement, values...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to insert into %s", tableName)))
@@ -437,8 +435,8 @@ func (h *Handler) processPutRequest(w http.ResponseWriter, r *http.Request) {
 	lid, _ := result.LastInsertId()
 	fmt.Println("\tInserted item id:", lid)
 
-	var pkey = h.Tables[tableName].getPrimaryKeyColumn()
-	var response = DataToExchange{
+	pkey := h.Tables[tableName].getPrimaryKeyColumn()
+	response := DataToExchange{
 		"response": DataToExchange{
 			pkey: lid,
 		},
@@ -455,8 +453,8 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var tableName = paths[0]
-	var itemId = paths[1]
+	tableName := paths[0]
+	itemId := paths[1]
 	if !h.checkTableExistance(w, tableName) {
 		return
 	}
@@ -469,7 +467,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 
 	defer r.Body.Close()
 
-	req := DataToExchange{}
+	var req DataToExchange
 	err = json.Unmarshal(body, &req)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -477,19 +475,19 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var reportBadField = func(fldName string) {
-		var errResponce = DataToExchange{
+	reportBadField := func(fldName string) {
+		errResponce := DataToExchange{
 			"error": fmt.Sprintf("field %s have invalid type", fldName),
 		}
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write(errResponce.Bytes())
 	}
 
-	var info = h.Tables[tableName]
-	var pkey = info.getPrimaryKeyColumn()
 	var setPattern string
-	var values = make([]interface{}, 0, len(info.Columns))
-	var firstCol = true
+	info := h.Tables[tableName]
+	pkey := info.getPrimaryKeyColumn()
+	values := make([]any, 0, len(info.Columns))
+	firstCol := true
 	for _, colInfo := range info.Columns {
 		value, ok := req[colInfo.Name]
 		if !ok {
@@ -518,8 +516,8 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	values = append(values, itemId)
 
-	var updateStatement = fmt.Sprintf("UPDATE %s SET %s WHERE %s=?", tableName, setPattern, pkey)
-	result, err := h.Db.Exec(updateStatement, values...)
+	updateStatement := fmt.Sprintf("UPDATE %s SET %s WHERE %s=?", tableName, setPattern, pkey)
+	result, err := h.DB.Exec(updateStatement, values...)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Printf("%s", errors.Wrap(err, fmt.Sprintf("unable to update item id: %s", itemId)))
@@ -529,7 +527,7 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 	updated, _ := result.RowsAffected()
 	fmt.Println("\tRows affected:", updated)
 
-	var response = DataToExchange{
+	response := DataToExchange{
 		"response": DataToExchange{
 			"updated": updated,
 		},
@@ -540,16 +538,16 @@ func (h *Handler) processPostRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 // Entry point for Handler: routing starts here
-func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Processing URL:", r.URL.String(), "Method:", r.Method)
 	switch r.Method {
-	case "DELETE":
+	case http.MethodDelete:
 		h.processDeleteRequest(w, r)
-	case "GET":
+	case http.MethodGet:
 		h.processGetRequest(w, r)
-	case "PUT":
+	case http.MethodPut:
 		h.processPutRequest(w, r)
-	case "POST":
+	case http.MethodPost:
 		h.processPostRequest(w, r)
 	}
 }
