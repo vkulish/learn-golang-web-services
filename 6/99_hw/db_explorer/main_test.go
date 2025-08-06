@@ -199,7 +199,7 @@ func TestApis(t *testing.T) {
 			Path:   "/items/",
 			Method: http.MethodPut,
 			Body: CR{
-				"id":          42, // auto increment primary key игнорируется при вставке
+				//"id":          42, // auto increment primary key игнорируется при вставке
 				"title":       "db_crud",
 				"description": "",
 			},
