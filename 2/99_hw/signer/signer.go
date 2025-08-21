@@ -10,13 +10,13 @@ import (
 // сюда писать код
 
 func ExecutePipeline(jobs ...job) {
-	var input chan interface{}
-	var output chan interface{}
+	var input chan any
+	var output chan any
 	wg := &sync.WaitGroup{}
 	for i, j := range jobs {
-		output = make(chan interface{}, 100)
+		output = make(chan any, 100)
 		wg.Add(1)
-		go func(j job, num int, in, out chan interface{}, wg *sync.WaitGroup) {
+		go func(j job, num int, in, out chan any, wg *sync.WaitGroup) {
 			defer wg.Done()
 			defer close(out)
 			j(in, out)
@@ -28,14 +28,14 @@ func ExecutePipeline(jobs ...job) {
 	wg.Wait()
 }
 
-func SingleHash(in, out chan interface{}) {
+func SingleHash(in, out chan any) {
 	wg := &sync.WaitGroup{}
 	for v := range in {
 		data := fmt.Sprintf("%v", v)
 		md5 := DataSignerMd5(data)
 		wg.Add(1)
-		go func(wg *sync.WaitGroup, data, md5 string, out chan interface{}) {
-			wg.Done()
+		go func(wg *sync.WaitGroup, data, md5 string, out chan any) {
+			defer wg.Done()
 			a := DataSignerCrc32(data)
 			b := DataSignerCrc32(md5)
 			out <- fmt.Sprintf("%s~%s", a, b)
@@ -44,7 +44,7 @@ func SingleHash(in, out chan interface{}) {
 	wg.Wait()
 }
 
-func MultiHash(in, out chan interface{}) {
+func MultiHash(in, out chan any) {
 	for v := range in {
 		data := fmt.Sprintf("%v", v)
 		wg := &sync.WaitGroup{}
@@ -61,12 +61,12 @@ func MultiHash(in, out chan interface{}) {
 	}
 }
 
-func CombineResults(in, out chan interface{}) {
+func CombineResults(in, out chan any) {
 	data := make([]string, 0, 100)
 	for v := range in {
 		data = append(data, fmt.Sprintf("%v", v))
 	}
-	
+
 	sort.Slice(data, func(i, j int) bool {
 		return data[i] < data[j]
 	})
